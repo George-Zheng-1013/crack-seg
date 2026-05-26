@@ -113,20 +113,67 @@ def _draw_masks(
     overlay = vis.copy()
 
     for det in detections:
+        color = _get_color(det.class_id)
+        mask = _decode_mask_rle(getattr(det, "mask_rle", {}) or {}, (H, W))
+        if mask is not None:
+            overlay[mask > 0] = color
+            continue
+
         if not det.has_mask or not det.mask_polygon:
             # 无掩码时用边界框矩形替代
             x1, y1, x2, y2 = det.bbox
-            color = _get_color(det.class_id)
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
             continue
 
         pts = np.array(det.mask_polygon, dtype=np.int32)
         if pts.ndim == 2:
             pts = pts.reshape((-1, 1, 2))
-        color = _get_color(det.class_id)
         cv2.fillPoly(overlay, [pts], color)
 
     return cv2.addWeighted(overlay, alpha, vis, 1 - alpha, 0)
+
+
+def _decode_mask_rle(mask_rle: dict, image_shape: tuple[int, int]) -> Optional[np.ndarray]:
+    if not mask_rle:
+        return None
+
+    try:
+        origin = mask_rle.get("origin", [0, 0])
+        size = mask_rle.get("size", [0, 0])
+        counts = mask_rle.get("counts", [])
+        value = int(mask_rle.get("start", 0))
+        crop_h, crop_w = int(size[0]), int(size[1])
+        if crop_h <= 0 or crop_w <= 0 or not counts:
+            return None
+
+        total = crop_h * crop_w
+        flat = np.empty(total, dtype=np.uint8)
+        offset = 0
+        for count in counts:
+            count = int(count)
+            if count <= 0:
+                continue
+            end = min(total, offset + count)
+            flat[offset:end] = value
+            offset = end
+            value = 1 - value
+            if offset >= total:
+                break
+        if offset != total:
+            return None
+
+        crop = flat.reshape((crop_h, crop_w), order="C")
+        x1, y1 = int(origin[0]), int(origin[1])
+        x2, y2 = x1 + crop_w, y1 + crop_h
+        H, W = image_shape
+        if x1 < 0 or y1 < 0 or x2 > W or y2 > H:
+            return None
+
+        mask = np.zeros((H, W), dtype=np.uint8)
+        mask[y1:y2, x1:x2] = crop
+        return mask
+    except Exception:
+        return None
 
 
 def _draw_label(

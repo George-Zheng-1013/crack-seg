@@ -4,11 +4,15 @@
 """
 
 import io
+import json
 import datetime
 from pathlib import Path
 from typing import Optional
 
 from app.inference import FrameResult, Detection
+
+
+API_CONFIG_PATH = Path(__file__).resolve().parent.parent / "api.json"
 
 
 def _feature(det: Detection, key: str, default=""):
@@ -27,6 +31,113 @@ def _top_feature_text(det: Detection) -> str:
 def _cause_text(det: Detection, key: str, sep: str = "、") -> str:
     values = (det.cause_analysis or {}).get(key, [])
     return sep.join(values) if values else ""
+
+
+def _pdf_advice_id(seq: int, frame_result: FrameResult, det: Detection) -> str:
+    return f"{seq}:{frame_result.frame_index}:{det.det_id}"
+
+
+def _load_deepseek_config() -> dict:
+    try:
+        config = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    deepseek = config.get("deepseek", {}) if isinstance(config, dict) else {}
+    api_key = str(deepseek.get("api_key", "")).strip()
+    if not api_key or api_key == "<your api key>":
+        return {}
+
+    return {
+        "api_key": api_key,
+        "base_url": deepseek.get("base_url", "https://api.deepseek.com"),
+        "model": deepseek.get("model", "deepseek-v4-pro"),
+        "timeout_sec": deepseek.get("timeout_sec", 30),
+    }
+
+
+def _pdf_advice_payload(results: list[FrameResult]) -> list[dict]:
+    items = []
+    seq = 1
+    for frame_result in results:
+        for det in frame_result.detections:
+            top = _top_match(det)
+            items.append({
+                "id": _pdf_advice_id(seq, frame_result, det),
+                "类别": det.class_name,
+                "置信度": round(det.confidence, 4),
+                "掩码面积": det.mask_area_px,
+                "视觉特征": _top_feature_text(det),
+                "匹配得分": top.get("score", ""),
+                "可能成因": _cause_text(det, "possible_causes"),
+                "原始排查建议": _cause_text(det, "inspection_advice", sep="；"),
+                "面积比": _feature(det, "rectangularity"),
+                "细长度": _feature(det, "slenderness"),
+                "主方向": _feature(det, "major_direction"),
+                "边界复杂度": _feature(det, "boundary_complexity"),
+                "骨架长度": _feature(det, "skeleton_length"),
+                "分支数": _feature(det, "branch_points"),
+                "端点数": _feature(det, "end_points"),
+            })
+            seq += 1
+    return items
+
+
+def _generate_pdf_api_advice(results: list[FrameResult]) -> dict[str, str]:
+    config = _load_deepseek_config()
+    if not config:
+        return {}
+
+    items = _pdf_advice_payload(results)
+    if not items:
+        return {}
+
+    system_prompt = """
+你是混凝土和基础设施表观缺陷排查助手。请根据用户提供的每个检测实例信息，综合类别、置信度、掩码面积、视觉特征、可能成因、原始排查建议以及形态指标，生成更具体的中文排查建议。
+
+要求：
+1. 只输出 JSON，不输出解释性文本。
+2. JSON 格式必须为 {"items":[{"id":"...","inspection_advice":"..."}]}。
+3. 每条 inspection_advice 控制在 1-2 句，面向现场复核和工程排查。
+4. 不把模型匹配结果写成确定诊断，使用“建议复核”“重点排查”“结合记录核查”等措辞。
+5. 不要只复述原始排查建议，要综合形态指标、视觉特征和可能成因。
+"""
+    user_prompt = json.dumps({"items": items}, ensure_ascii=False)
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            timeout=float(config["timeout_sec"]),
+        )
+        response = client.chat.completions.create(
+            model=config["model"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content or "{}"
+        parsed = json.loads(content)
+        api_items = parsed.get("items", [])
+        if not isinstance(api_items, list):
+            return {}
+
+        advice_by_id = {}
+        valid_ids = {item["id"] for item in items}
+        for item in api_items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id", ""))
+            advice = str(item.get("inspection_advice", "")).strip()
+            if item_id in valid_ids and advice:
+                advice_by_id[item_id] = advice
+        return advice_by_id
+    except Exception:
+        return {}
 
 
 # ──────────────────────────────────────────────
@@ -390,9 +501,16 @@ def generate_pdf_report(
     det_headers = ["#", "帧编号", "类别", "置信度", "掩码面积", "视觉特征", "可能成因", "排查建议"]
     det_data = [det_headers]
 
+    api_advice = _generate_pdf_api_advice(results)
+    det_seq = 1
     for r in results:
         for d in r.detections:
             top = _top_match(d)
+            advice_id = _pdf_advice_id(det_seq, r, d)
+            advice_text = api_advice.get(
+                advice_id,
+                _cause_text(d, "inspection_advice", sep="；"),
+            )
             det_data.append([
                 str(d.det_id),
                 str(r.frame_index),
@@ -401,8 +519,9 @@ def generate_pdf_report(
                 str(d.mask_area_px),
                 f"{_top_feature_text(d)} {top.get('score', '')}",
                 _cause_text(d, "possible_causes"),
-                _cause_text(d, "inspection_advice", sep="；"),
+                advice_text,
             ])
+            det_seq += 1
 
     det_data = [
         [

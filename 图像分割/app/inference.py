@@ -33,6 +33,7 @@ class Detection:
     mask_area_px: int   # 掩码面积 (px²)，无掩码时等于 bbox area
     has_mask: bool
     mask_polygon: list  # 轮廓点列表 [[x,y], ...]，用于报告
+    mask_rle: dict = field(default_factory=dict)
     features: dict = field(default_factory=dict)
     source_indices: list = field(default_factory=list)
     cause_analysis: dict = field(default_factory=dict)
@@ -215,6 +216,40 @@ def mask_to_polygon(mask: np.ndarray) -> list:
     epsilon = 0.02 * cv2.arcLength(largest, True)
     approx = cv2.approxPolyDP(largest, epsilon, True)
     return approx.reshape(-1, 2).tolist()
+
+
+def encode_mask_rle(mask: np.ndarray, bbox: list[int]) -> dict:
+    x1, y1, x2, y2 = bbox
+    h, w = mask.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+    if x2 <= x1 or y2 <= y1:
+        return {}
+
+    crop = np.ascontiguousarray((mask[y1:y2, x1:x2] > 0).astype(np.uint8))
+    flat = crop.ravel(order="C")
+    if flat.size == 0:
+        return {}
+
+    counts = []
+    current = int(flat[0])
+    run_len = 1
+    for value in flat[1:]:
+        value = int(value)
+        if value == current:
+            run_len += 1
+        else:
+            counts.append(run_len)
+            current = value
+            run_len = 1
+    counts.append(run_len)
+
+    return {
+        "origin": [x1, y1],
+        "size": [int(crop.shape[0]), int(crop.shape[1])],
+        "start": int(flat[0]),
+        "counts": counts,
+    }
 
 
 def extract_crack_features(image: np.ndarray, mask: np.ndarray, bbox: list[int]) -> dict:
@@ -496,6 +531,7 @@ class DefectDetector:
             mask_bin = resize_mask_to_image(item["mask"], (H, W))
             mask_area = int(mask_bin.sum())
             mask_poly = mask_to_polygon(mask_bin)
+            mask_rle = encode_mask_rle(mask_bin, [x1, y1, x2, y2])
             features = extract_crack_features(image, mask_bin, [x1, y1, x2, y2])
             features["instance_name"] = item.get("name", f"{cls_name}{i + 1}")
 
@@ -513,6 +549,7 @@ class DefectDetector:
                 mask_area_px = mask_area,
                 has_mask    = True,
                 mask_polygon = mask_poly,
+                mask_rle    = mask_rle,
                 features    = features,
                 source_indices = item.get("indices", []),
                 cause_analysis = {"status": "pending"},

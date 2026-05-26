@@ -183,3 +183,4 @@ cython_debug/
 *.pt
 图像分割/.ultralytics/
 图像分割/Ultralytics/
+图像分割/api.json
