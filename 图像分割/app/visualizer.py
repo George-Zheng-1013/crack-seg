@@ -180,21 +180,31 @@ def _draw_summary_overlay(vis: np.ndarray, result: FrameResult):
 
     y_offset = 10
     for line in lines:
-        (tw, th), _ = cv2.getTextSize(line, FONT, 4, 1)
-        # 半透明黑色背景条
-        cv2.rectangle(
-            vis, (5, y_offset - 2), (tw + 14, y_offset + th + 4), (0, 0, 0), -1
-        )
-        cv2.addWeighted(
-            vis[y_offset - 2 : y_offset + th + 4, 5 : tw + 14],
-            0.5,
-            np.zeros((th + 6, tw + 9, 3), dtype=np.uint8),
-            0.5,
-            0,
-            vis[y_offset - 2 : y_offset + th + 4, 5 : tw + 14],
-        )
+        # 使用常量计算文字尺寸
+        (tw, th), baseline = cv2.getTextSize(line, FONT, FONT_SCALE, FONT_THICKNESS)
+        pad = LABEL_PADDING
+
+        x1, y1 = 5, y_offset - 2
+        x2, y2 = 5 + tw + pad * 2, y_offset + th + pad * 2
+
+        # 更强的不透明背景
+        sub = vis[y1:y2, x1:x2]
+        if sub.size > 0:
+            bg = np.full_like(sub, (0, 0, 0))
+            vis[y1:y2, x1:x2] = cv2.addWeighted(bg, 0.85, sub, 0.15, 0)
+
+        # 白色文字，使用与测量一致的参数
+        tx = x1 + pad
+        ty = y_offset + th
         cv2.putText(
-            vis, line, (10, y_offset + th), FONT, 2, (255, 255, 255), 1, cv2.LINE_AA
+            vis,
+            line,
+            (tx, ty),
+            FONT,
+            FONT_SCALE,
+            (255, 255, 255),
+            FONT_THICKNESS,
+            cv2.LINE_AA,
         )
         y_offset += th + 8
 
@@ -222,7 +232,7 @@ def _draw_no_detection_hint(vis: np.ndarray) -> np.ndarray:
 # ──────────────────────────────────────────────
 
 
-def encode_image_to_jpeg_bytes(image: np.ndarray, quality: int = 85) -> bytes:
+def encode_image_to_jpeg_bytes(image: np.ndarray, quality: int = 100) -> bytes:
     """将 BGR numpy array 编码为 JPEG bytes"""
     ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
     if not ok:

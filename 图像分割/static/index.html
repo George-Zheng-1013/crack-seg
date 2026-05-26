@@ -564,6 +564,14 @@ async function detectImage(conf, iou) {
   if (!fileInput.files.length) { toast('请先选择图像文件', 'error'); return; }
   const file = fileInput.files[0];
 
+  setLoading(true, '图像分割中...');
+  try {
+    await detectImageWebSocket(file, conf, iou);
+    return;
+  } catch(e) {
+    console.warn('WebSocket 分阶段检测失败，回退到 HTTP:', e);
+  }
+
   setLoading(true, '图像推理中...');
   const fd = new FormData();
   fd.append('file', file);
@@ -581,6 +589,91 @@ async function detectImage(conf, iou) {
   } finally {
     setLoading(false);
   }
+}
+
+function detectImageWebSocket(file, conf, iou) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(makeWsUrl('/ws/detect'));
+    let settled = false;
+    let gotSegmentation = false;
+
+    ws.onopen = async () => {
+      try {
+        const image = await fileToDataUrl(file);
+        ws.send(JSON.stringify({
+          image,
+          conf,
+          iou,
+          source_name: file.name,
+        }));
+      } catch(e) {
+        ws.close();
+        reject(e);
+      }
+    };
+
+    ws.onmessage = event => {
+      const data = JSON.parse(event.data);
+      if (data.stage === 'error') {
+        ws.close();
+        if (!settled && gotSegmentation) {
+          settled = true;
+          setLoading(false);
+          document.getElementById('canvas-info').textContent = '成因分析失败，分割结果已保留';
+          toast(`成因分析失败: ${data.error || '未知错误'}`, 'error');
+          resolve(data);
+        } else if (!settled) {
+          reject(new Error(data.error || 'WebSocket 检测失败'));
+        }
+        return;
+      }
+
+      if (data.stage === 'segmentation_done') {
+        gotSegmentation = true;
+        handleSingleResult(data, false);
+        setLoading(false);
+        document.getElementById('canvas-info').textContent =
+          `${data.summary.image_size || ''} | 成因分析中...`;
+        toast(`分割完成：发现 ${data.summary.total_defects} 处缺陷，正在分析成因`, 'info');
+        return;
+      }
+
+      if (data.stage === 'analysis_done') {
+        handleSingleResult({ ...data, image_b64: annotatedImage }, true);
+        document.getElementById('canvas-info').textContent =
+          `${data.summary.image_size || ''} | 成因分析完成`;
+        toast(`成因分析完成：发现 ${data.summary.total_defects} 处缺陷`, 'success');
+        settled = true;
+        ws.close();
+        resolve(data);
+      }
+    };
+
+    ws.onerror = () => {
+      if (!settled && !gotSegmentation) reject(new Error('WebSocket 连接失败'));
+    };
+    ws.onclose = () => {
+      if (!settled && !gotSegmentation) reject(new Error('WebSocket 已关闭'));
+      else if (!settled && gotSegmentation) {
+        settled = true;
+        resolve();
+      }
+    };
+  });
+}
+
+function makeWsUrl(path) {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}${path}`;
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = ev => resolve(ev.target.result);
+    reader.onerror = () => reject(reader.error || new Error('文件读取失败'));
+    reader.readAsDataURL(file);
+  });
 }
 
 async function detectBatch(conf, iou) {
@@ -664,11 +757,11 @@ async function detectDatasetSample(filename) {
 /* ══════════════════════════════════════════════════
    结果处理
 ══════════════════════════════════════════════════ */
-function handleSingleResult(data) {
+function handleSingleResult(data, analysisDone=true) {
   currentSession = data.session_id;
   allResults     = [data.result];
   currentResult  = data.result;
-  annotatedImage = data.image_b64;
+  if (data.image_b64) annotatedImage = data.image_b64;
 
   showImage(annotatedImage);
   renderDetections(data.result.detections);
@@ -679,9 +772,13 @@ function handleSingleResult(data) {
     frames : 1,
   });
   renderClassChart(data.summary.by_class);
-  enableExport(true);
-  addHistory({ name: data.source_name||'image', thumb: annotatedImage, total: data.summary.total_defects });
-  document.getElementById('canvas-info').textContent = data.summary.image_size || '';
+  enableExport(analysisDone);
+  if (analysisDone || !history_records.length || history_records[0].thumb !== annotatedImage) {
+    addHistory({ name: data.source_name||'image', thumb: annotatedImage, total: data.summary.total_defects });
+  }
+  document.getElementById('canvas-info').textContent = analysisDone
+    ? (data.summary.image_size || '')
+    : `${data.summary.image_size || ''} | 成因分析中...`;
   document.getElementById('timeline').classList.remove('visible');
   document.getElementById('batch-thumbs').style.display = 'none';
 }
@@ -839,6 +936,7 @@ function renderStats({total, time, conf, frames}) {
 }
 
 function renderClassChart(byClass) {
+  if (typeof Chart === 'undefined') return;
   const ctx = document.getElementById('chart-class').getContext('2d');
   if (classChart) classChart.destroy();
 

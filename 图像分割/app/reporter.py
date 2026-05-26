@@ -469,7 +469,7 @@ def generate_pdf_report(
 
                 tmpf = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
                 tmp_files.append(tmpf.name)
-                _cv2.imwrite(tmpf.name, img_bgr, [_cv2.IMWRITE_JPEG_QUALITY, 85])
+                _cv2.imwrite(tmpf.name, img_bgr, [_cv2.IMWRITE_JPEG_QUALITY, 100])
                 tmpf.close()
 
                 caption = (f"图 {i+1} | 帧编号: {frame_res.frame_index} | "

@@ -354,6 +354,7 @@ class DefectDetector:
         iou: Optional[float]  = None,
         frame_index: int = 0,
         timestamp_sec: float = 0.0,
+        analyze_causes: bool = True,
     ) -> FrameResult:
         """
         对单张 BGR numpy 图像进行推理。
@@ -382,13 +383,16 @@ class DefectDetector:
 
         detections = self._parse_results(results[0], image)
 
-        return FrameResult(
+        frame_result = FrameResult(
             frame_index    = frame_index,
             timestamp_sec  = timestamp_sec,
             image_shape    = list(image.shape),
             detections     = detections,
             inference_time_ms = inference_ms,
         )
+        if analyze_causes:
+            self.add_cause_analysis(image, frame_result)
+        return frame_result
 
     # ── 批量图像推理 ─────────────────────────
 
@@ -472,8 +476,6 @@ class DefectDetector:
             return detections
 
         merged_instances = merge_instances_by_iou(result, MERGE_IOU_THRESHOLD)
-        analyzer = get_cause_analyzer()
-
         for i, item in enumerate(merged_instances):
             cls_id = int(item["class_id"])
             conf = float(item["conf"])
@@ -497,9 +499,6 @@ class DefectDetector:
             features = extract_crack_features(image, mask_bin, [x1, y1, x2, y2])
             features["instance_name"] = item.get("name", f"{cls_name}{i + 1}")
 
-            crop = image[y1:y2, x1:x2]
-            cause_analysis = analyzer.analyze_crop(crop)
-
             detections.append(Detection(
                 det_id      = i + 1,
                 class_id    = cls_id,
@@ -516,7 +515,7 @@ class DefectDetector:
                 mask_polygon = mask_poly,
                 features    = features,
                 source_indices = item.get("indices", []),
-                cause_analysis = cause_analysis,
+                cause_analysis = {"status": "pending"},
             ))
 
         # 按置信度降序排列
@@ -526,6 +525,18 @@ class DefectDetector:
             d.det_id = idx + 1
 
         return detections
+
+    def add_cause_analysis(self, image: np.ndarray, frame_result: FrameResult) -> FrameResult:
+        """为已有检测结果补充 CLIP/SigLIP 成因分析，不重新执行 YOLO。"""
+        analyzer = get_cause_analyzer()
+        H, W = image.shape[:2]
+        for det in frame_result.detections:
+            x1, y1, x2, y2 = det.bbox
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(W, x2), min(H, y2)
+            crop = image[y1:y2, x1:x2]
+            det.cause_analysis = analyzer.analyze_crop(crop)
+        return frame_result
 
     # ── 工具方法 ─────────────────────────────
 

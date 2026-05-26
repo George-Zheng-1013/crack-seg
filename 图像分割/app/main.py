@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.inference   import DefectDetector, FrameResult, MERGE_IOU_THRESHOLD
-from app.visualizer  import draw_detections, image_to_base64, thumbnail
+from app.visualizer  import draw_detections, image_to_base64
 from app.reporter    import generate_excel_report, generate_pdf_report
 from app.cause_analyzer import MODEL_NAME as CAUSE_MODEL_NAME
 
@@ -191,7 +191,6 @@ async def detect_image(
     file      : UploadFile = File(...),
     conf      : float      = Form(0.25),
     iou       : float      = Form(0.45),
-    thumbnail_size: int    = Form(1024),
 ):
     """
     上传单张图像，返回检测结果 + 标注图 base64。
@@ -209,10 +208,9 @@ async def detect_image(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"推理失败: {e}")
 
-    # 生成标注图（缩略图用于传输）
+    # 生成原始分辨率标注图
     ann_img  = draw_detections(image, result)
-    disp_img = thumbnail(ann_img, thumbnail_size)
-    img_b64  = image_to_base64(disp_img, "jpeg")
+    img_b64  = image_to_base64(ann_img, "jpeg")
 
     # 存入会话
     session_id = _make_session(
@@ -267,11 +265,10 @@ async def detect_batch(
 
         result  = detector.detect_image(image, frame_index=idx)
         ann_img = draw_detections(image, result)
-        disp    = thumbnail(ann_img, 512)
 
         all_results.append(result)
         all_ann.append(ann_img)
-        thumbnails_b64.append(image_to_base64(disp, "jpeg"))
+        thumbnails_b64.append(image_to_base64(ann_img, "jpeg"))
 
     session_id = _make_session(all_results, f"{len(files)} images", all_ann)
 
@@ -370,14 +367,16 @@ async def detect_video(
 @app.websocket("/ws/detect")
 async def ws_detect(websocket: WebSocket):
     """
-    WebSocket 实时检测接口。
-    客户端发送 base64 编码的图像帧，服务端返回检测结果 JSON。
+    WebSocket 分阶段检测接口。
+    客户端发送 base64 编码的图像帧，服务端先返回 YOLO+实例合并结果，
+    再返回补充 CLIP/SigLIP 成因分析后的完整结果。
 
     消息格式（客户端 → 服务端）:
         {"image": "<base64>", "conf": 0.25, "iou": 0.45}
 
     消息格式（服务端 → 客户端）:
-        {"image_b64": "<base64>", "result": {...}, "summary": {...}}
+        {"stage": "segmentation_done", "image_b64": "...", "result": {...}}
+        {"stage": "analysis_done", "result": {...}}
     """
     await websocket.accept()
     detector = get_detector()
@@ -398,22 +397,44 @@ async def ws_detect(websocket: WebSocket):
                 image = _decode_upload(img_bytes)
 
                 detector.update_thresholds(conf, iou)
-                result  = detector.detect_image(image)
+                result  = detector.detect_image(image, analyze_causes=False)
                 ann_img = draw_detections(image, result)
-                disp    = thumbnail(ann_img, 640)
-                img_out = image_to_base64(disp, "jpeg")
+                img_out = image_to_base64(ann_img, "jpeg")
+                session_id = _make_session(
+                    results          = [result],
+                    source_name      = msg.get("source_name", "websocket-image"),
+                    annotated_images = [ann_img],
+                )
 
                 await websocket.send_json({
+                    "stage"    : "segmentation_done",
+                    "session_id": session_id,
+                    "source_name": msg.get("source_name", "websocket-image"),
                     "image_b64": img_out,
                     "result"   : result.to_dict(),
                     "summary"  : {
                         "total_defects"   : result.total_defects,
                         "by_class"        : result.by_class,
                         "inference_time_ms": round(result.inference_time_ms, 2),
+                        "image_size"      : f"{image.shape[1]}x{image.shape[0]}",
+                    },
+                })
+
+                detector.add_cause_analysis(image, result)
+                await websocket.send_json({
+                    "stage"    : "analysis_done",
+                    "session_id": session_id,
+                    "source_name": msg.get("source_name", "websocket-image"),
+                    "result"   : result.to_dict(),
+                    "summary"  : {
+                        "total_defects"   : result.total_defects,
+                        "by_class"        : result.by_class,
+                        "inference_time_ms": round(result.inference_time_ms, 2),
+                        "image_size"      : f"{image.shape[1]}x{image.shape[0]}",
                     },
                 })
             except Exception as e:
-                await websocket.send_json({"error": str(e)})
+                await websocket.send_json({"stage": "error", "error": str(e)})
 
     except WebSocketDisconnect:
         pass
@@ -531,8 +552,7 @@ async def dataset_detect(
     detector.update_thresholds(conf, iou)
     result   = detector.detect_image(image)
     ann_img  = draw_detections(image, result)
-    disp     = thumbnail(ann_img, 1024)
-    img_b64  = image_to_base64(disp, "jpeg")
+    img_b64  = image_to_base64(ann_img, "jpeg")
 
     session_id = _make_session([result], filename, [ann_img])
 
