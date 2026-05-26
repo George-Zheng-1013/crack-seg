@@ -1,78 +1,32 @@
 """
-CLIP/SigLIP 成因分析模块。
+CLIP/SigLIP cause analysis wrapper.
 
-对裂缝裁剪图做零样本图文匹配，再将可见特征映射为可能成因。
-该模块懒加载大模型，加载或推理失败时返回错误信息，不阻断主检测流程。
+The FastAPI/YOLO process imports OpenCV. On this Windows environment, loading
+the SigLIP torch model in the same process after cv2 can trigger a native access
+violation. To keep the server stable, SigLIP runs in a short-lived worker
+subprocess that does not import cv2.
 """
 
 from __future__ import annotations
 
+import base64
+import io
+import json
+import os
+import subprocess
+import sys
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
-import cv2
 import numpy as np
 from PIL import Image
 
-
 MODEL_NAME = "google/siglip-so400m-patch14-384"
-
-VISUAL_LABELS = [
-    "thin concrete crack",
-    "linear crack on concrete surface",
-    "wide structural crack",
-    "branching concrete crack",
-    "spalling concrete surface",
-    "peeling damaged concrete",
-    "water seepage stain",
-    "damp wall surface",
-]
-
-LABEL_TEXT_CN = {
-    "thin concrete crack": "细小混凝土裂缝",
-    "linear crack on concrete surface": "线性混凝土裂缝",
-    "wide structural crack": "较宽结构性裂缝",
-    "branching concrete crack": "分叉型混凝土裂缝",
-    "spalling concrete surface": "混凝土表面剥落",
-    "peeling damaged concrete": "表层脱落损伤",
-    "water seepage stain": "渗水痕迹",
-    "damp wall surface": "潮湿墙面",
-}
-
-CAUSE_RULES = {
-    "thin concrete crack": {
-        "possible_causes": ["干缩收缩", "温度应力", "表层老化"],
-        "inspection_advice": ["复核裂缝宽度变化", "检查环境温湿度与养护记录"],
-    },
-    "linear crack on concrete surface": {
-        "possible_causes": ["结构拉应力", "施工缝弱化", "温度变形"],
-        "inspection_advice": ["结合构件受力方向复查", "观察裂缝是否持续扩展"],
-    },
-    "wide structural crack": {
-        "possible_causes": ["承载不足", "沉降变形", "结构受力异常"],
-        "inspection_advice": ["优先复核结构安全", "进行宽度监测和沉降观测"],
-    },
-    "branching concrete crack": {
-        "possible_causes": ["疲劳损伤", "材料劣化", "冻融循环"],
-        "inspection_advice": ["检查裂缝网络范围", "结合服役年限和环境暴露条件判断"],
-    },
-    "spalling concrete surface": {
-        "possible_causes": ["钢筋锈蚀膨胀", "冻融破坏", "冲击损伤"],
-        "inspection_advice": ["检查保护层厚度和钢筋锈蚀", "排查局部空鼓与脱落风险"],
-    },
-    "peeling damaged concrete": {
-        "possible_causes": ["表层粘结失效", "长期风化", "施工质量缺陷"],
-        "inspection_advice": ["检查表层强度", "清理松散区域后复查基层状态"],
-    },
-    "water seepage stain": {
-        "possible_causes": ["防水层失效", "渗漏", "排水不良"],
-        "inspection_advice": ["追踪水源路径", "检查排水和防水节点"],
-    },
-    "damp wall surface": {
-        "possible_causes": ["长期潮湿", "渗水", "环境湿度过高"],
-        "inspection_advice": ["测量局部含水率", "排查背水面和管线渗漏"],
-    },
-}
+PROMPTS_PATH = Path(__file__).with_name("cause_prompts.json")
+WORKER_TIMEOUT_SEC = int(os.getenv("CAUSE_WORKER_TIMEOUT_SEC", "240"))
+CPU_FALLBACK_TIMEOUT_SEC = int(os.getenv("CAUSE_CPU_FALLBACK_TIMEOUT_SEC", "600"))
+WINDOWS_ACCESS_VIOLATION_EXIT = 3221225477
 
 
 @dataclass
@@ -80,62 +34,209 @@ class CauseAnalyzer:
     model_name: str = MODEL_NAME
 
     def __post_init__(self):
-        self._pipe = None
-        self._load_error: str | None = None
-        self._lock = threading.Lock()
+        self._prompt_library = None
+        self._prompt_error: str | None = None
+        self._prompt_lock = threading.Lock()
 
-    def _load(self):
-        if self._pipe is not None or self._load_error is not None:
+    def _load_prompts(self):
+        if self._prompt_library is not None or self._prompt_error is not None:
             return
 
-        with self._lock:
-            if self._pipe is not None or self._load_error is not None:
+        with self._prompt_lock:
+            if self._prompt_library is not None or self._prompt_error is not None:
                 return
             try:
-                from transformers import pipeline
-
-                self._pipe = pipeline(
-                    task="zero-shot-image-classification",
-                    model=self.model_name,
-                )
+                raw = json.loads(PROMPTS_PATH.read_text(encoding="utf-8"))
+                self._prompt_library = {
+                    str(class_name).lower(): records
+                    for class_name, records in raw.items()
+                    if isinstance(records, list)
+                }
             except Exception as exc:
-                self._load_error = str(exc)
+                self._prompt_error = str(exc)
 
-    def analyze_crop(self, crop_bgr: np.ndarray, top_k: int = 3) -> dict:
-        if crop_bgr is None or crop_bgr.size == 0:
-            return _empty_analysis("empty crop")
+    def analyze_crop(
+        self, crop_bgr: np.ndarray, class_name: str, top_k: int = 3
+    ) -> dict:
+        return self.analyze_batch(
+            [{"crop_bgr": crop_bgr, "class_name": class_name}],
+            top_k=top_k,
+        )[0]
 
-        self._load()
-        if self._pipe is None:
-            return _empty_analysis(self._load_error or "model unavailable")
+    def analyze_batch(self, items: list[dict], top_k: int = 3) -> list[dict]:
+        self._load_prompts()
+        if self._prompt_library is None:
+            return [
+                _empty_analysis(self._prompt_error or "prompt library unavailable")
+                for _ in items
+            ]
+
+        payload_items = []
+        fallback_results = []
+        payload_index_to_item_index = {}
+
+        for item_index, item in enumerate(items):
+            class_key = str(item.get("class_name") or "").lower()
+            crop_bgr = item.get("crop_bgr")
+            prompt_records = self._prompt_library.get(class_key, [])
+
+            if not prompt_records:
+                fallback_results.append(
+                    _empty_analysis(f"no prompts for class: {class_key}", class_key)
+                )
+                continue
+            if crop_bgr is None or crop_bgr.size == 0:
+                fallback_results.append(_empty_analysis("empty crop", class_key))
+                continue
+
+            payload_index_to_item_index[len(payload_items)] = item_index
+            fallback_results.append(None)
+            payload_items.append(
+                {
+                    "class_name": class_key,
+                    "image_b64": _encode_crop_png(crop_bgr),
+                }
+            )
+
+        if not payload_items:
+            return fallback_results
+
+        worker_results = self._run_worker(payload_items, top_k)
+        if len(worker_results) != len(payload_items):
+            err = f"worker returned {len(worker_results)} results for {len(payload_items)} inputs"
+            worker_results = [_empty_analysis(err) for _ in payload_items]
+
+        for payload_index, result in enumerate(worker_results):
+            item_index = payload_index_to_item_index[payload_index]
+            fallback_results[item_index] = result
+
+        return fallback_results
+
+    def _run_worker(self, payload_items: list[dict], top_k: int) -> list[dict]:
+        app_root = Path(__file__).resolve().parent.parent
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONPATH"] = str(app_root)
+
+        payload = {
+            "model_name": self.model_name,
+            "prompts_path": str(PROMPTS_PATH),
+            "top_k": top_k,
+            "items": payload_items,
+        }
+
+        proc = self._run_worker_process(payload, app_root, env, WORKER_TIMEOUT_SEC)
+        if isinstance(proc, subprocess.TimeoutExpired):
+            return [
+                _empty_analysis(f"cause worker timed out after {WORKER_TIMEOUT_SEC}s")
+                for _ in payload_items
+            ]
+        if isinstance(proc, Exception):
+            return [
+                _empty_analysis(f"cause worker failed: {proc}") for _ in payload_items
+            ]
+
+        if proc.returncode != 0:
+            if (
+                proc.returncode == WINDOWS_ACCESS_VIOLATION_EXIT
+                and env.get("CAUSE_MODEL_DEVICE", "auto").lower() != "cpu"
+            ):
+                cpu_env = env.copy()
+                cpu_env["CAUSE_MODEL_DEVICE"] = "cpu"
+                cpu_proc = self._run_worker_process(
+                    payload,
+                    app_root,
+                    cpu_env,
+                    CPU_FALLBACK_TIMEOUT_SEC,
+                )
+                if isinstance(cpu_proc, subprocess.TimeoutExpired):
+                    return [
+                        _empty_analysis(
+                            "GPU SigLIP worker crashed with access violation; "
+                            f"CPU fallback timed out after {CPU_FALLBACK_TIMEOUT_SEC}s"
+                        )
+                        for _ in payload_items
+                    ]
+                if isinstance(cpu_proc, Exception):
+                    return [
+                        _empty_analysis(
+                            "GPU SigLIP worker crashed with access violation; "
+                            f"CPU fallback failed: {cpu_proc}"
+                        )
+                        for _ in payload_items
+                    ]
+                if cpu_proc.returncode == 0:
+                    proc = cpu_proc
+                else:
+                    cpu_err = (
+                        cpu_proc.stderr
+                        or cpu_proc.stdout
+                        or f"CPU fallback worker exit code {cpu_proc.returncode}"
+                    ).strip()
+                    return [
+                        _empty_analysis(
+                            "GPU SigLIP worker crashed with access violation; "
+                            f"CPU fallback failed: {cpu_err}"
+                        )
+                        for _ in payload_items
+                    ]
+            else:
+                err = _worker_error(proc)
+                return [_empty_analysis(err) for _ in payload_items]
+
+        if proc.returncode != 0:
+            err = _worker_error(proc)
+            return [_empty_analysis(err) for _ in payload_items]
 
         try:
-            image_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-            pil_image = Image.fromarray(image_rgb)
-            outputs = self._pipe(pil_image, candidate_labels=VISUAL_LABELS)
-            matches = [
-                {
-                    "label": item["label"],
-                    "label_cn": LABEL_TEXT_CN.get(item["label"], item["label"]),
-                    "score": round(float(item["score"]), 4),
-                }
-                for item in outputs[:top_k]
-            ]
-            top = matches[0] if matches else {}
-            rule = CAUSE_RULES.get(top.get("label"), {})
-            return {
-                "top_match": top,
-                "matches": matches,
-                "possible_causes": rule.get("possible_causes", []),
-                "inspection_advice": rule.get("inspection_advice", []),
-                "note": "图文匹配结果仅用于辅助判断，报告中应表述为可能成因。",
-            }
+            data = json.loads(proc.stdout)
+            return data.get("results", [])
         except Exception as exc:
-            return _empty_analysis(str(exc))
+            err = f"invalid worker output: {exc}; stdout={proc.stdout[:500]}"
+            return [_empty_analysis(err) for _ in payload_items]
+
+    def _run_worker_process(
+        self,
+        payload: dict,
+        app_root: Path,
+        env: dict,
+        timeout_sec: int,
+    ):
+        try:
+            return subprocess.run(
+                [sys.executable, "-m", "app.cause_worker"],
+                input=json.dumps(payload, ensure_ascii=False),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                cwd=str(app_root),
+                env=env,
+                timeout=timeout_sec,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            return exc
+        except Exception as exc:
+            return exc
 
 
-def _empty_analysis(error: str) -> dict:
+def _encode_crop_png(crop_bgr: np.ndarray) -> str:
+    crop_rgb = np.ascontiguousarray(crop_bgr[:, :, ::-1])
+    image = Image.fromarray(crop_rgb)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _worker_error(proc: subprocess.CompletedProcess) -> str:
+    detail = (proc.stderr or proc.stdout or "").strip()
+    code = f"worker exit code {proc.returncode}"
+    return f"{code}: {detail}" if detail else code
+
+
+def _empty_analysis(error: str, class_name: str = "") -> dict:
     return {
+        "class_name": class_name,
         "top_match": {},
         "matches": [],
         "possible_causes": [],

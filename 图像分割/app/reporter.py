@@ -19,6 +19,11 @@ def _top_match(det: Detection) -> dict:
     return (det.cause_analysis or {}).get("top_match", {}) or {}
 
 
+def _top_feature_text(det: Detection) -> str:
+    top = _top_match(det)
+    return top.get("feature_cn") or top.get("label_cn", "")
+
+
 def _cause_text(det: Detection, key: str, sep: str = "、") -> str:
     values = (det.cause_analysis or {}).get(key, [])
     return sep.join(values) if values else ""
@@ -220,7 +225,7 @@ def generate_excel_report(
                 _feature(det, "skeleton_length"),
                 _feature(det, "branch_points"),
                 _feature(det, "end_points"),
-                top.get("label_cn", ""),
+                _top_feature_text(det),
                 top.get("score", ""),
                 _cause_text(det, "possible_causes"),
                 _cause_text(det, "inspection_advice", sep="；"),
@@ -394,7 +399,7 @@ def generate_pdf_report(
                 d.class_name,
                 f"{d.confidence:.3f}",
                 str(d.mask_area_px),
-                f"{top.get('label_cn', '')} {top.get('score', '')}",
+                f"{_top_feature_text(d)} {top.get('score', '')}",
                 _cause_text(d, "possible_causes"),
                 _cause_text(d, "inspection_advice", sep="；"),
             ])

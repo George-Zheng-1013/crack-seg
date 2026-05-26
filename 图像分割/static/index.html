@@ -888,11 +888,28 @@ function renderDetections(detections) {
     const top = ca.top_match || {};
     const causes = ca.possible_causes || [];
     const advice = ca.inspection_advice || [];
-    const matchText = top.label_cn
-      ? `${top.label_cn} ${(top.score ?? 0).toFixed ? top.score.toFixed(3) : top.score}`
-      : '<span class="det-muted">暂无匹配结果</span>';
-    const causeText = causes.length ? causes.join('、') : '<span class="det-muted">暂无</span>';
-    const adviceText = advice.length ? advice.join('；') : '<span class="det-muted">暂无</span>';
+    const featureText = top.feature_cn || top.label_cn;
+    const scoreText = fmtScore(top.score);
+    const isCausePending = ca.status === 'pending';
+    const causeError = ca.error || '';
+    const matchText = featureText
+      ? `${featureText}${scoreText ? ` ${scoreText}` : ''}`
+      : isCausePending
+        ? '<span class="det-muted">成因分析中...</span>'
+        : causeError
+          ? `<span class="det-muted">分析失败：${escapeHtml(causeError)}</span>`
+          : '<span class="det-muted">暂无匹配结果</span>';
+    const causeTitle = top.cause ? `${top.cause}` : '';
+    const causeText = causes.length
+      ? causes.join('、')
+      : isCausePending
+        ? '<span class="det-muted">成因分析中...</span>'
+        : '<span class="det-muted">暂无</span>';
+    const adviceText = advice.length
+      ? advice.join('；')
+      : isCausePending
+        ? '<span class="det-muted">成因分析中...</span>'
+        : '<span class="det-muted">暂无</span>';
     return `
       <div class="det-item" onclick="highlightDetection(${i})">
         <div class="det-index">#${d.det_id}</div>
@@ -913,7 +930,7 @@ function renderDetections(detections) {
           <strong>形态</strong> 面积比 ${fmtNum(f.rectangularity)} | 细长度 ${fmtNum(f.slenderness)} | 方向 ${fmtNum(f.major_direction)}°<br/>
           <strong>骨架</strong> 长度 ${fmtNum(f.skeleton_length, 0)} | 分支 ${fmtNum(f.branch_points, 0)} | 端点 ${fmtNum(f.end_points, 0)}<br/>
           <strong>视觉特征</strong> ${matchText}<br/>
-          <strong>可能成因</strong> ${causeText}<br/>
+          <strong>最可能成因</strong> ${causeTitle || causeText}<br/>
           <strong>排查建议</strong> ${adviceText}
         </div>
       </div>
@@ -926,6 +943,21 @@ function fmtNum(v, digits=2) {
   const n = Number(v);
   if (!Number.isFinite(n)) return v;
   return digits === 0 ? String(Math.round(n)) : n.toFixed(digits);
+}
+
+function fmtScore(v) {
+  if (v === undefined || v === null || v === '') return '';
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(3) : String(v);
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
 }
 
 function renderStats({total, time, conf, frames}) {

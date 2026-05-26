@@ -530,12 +530,22 @@ class DefectDetector:
         """为已有检测结果补充 CLIP/SigLIP 成因分析，不重新执行 YOLO。"""
         analyzer = get_cause_analyzer()
         H, W = image.shape[:2]
+        analysis_items = []
+        valid_detections = []
         for det in frame_result.detections:
             x1, y1, x2, y2 = det.bbox
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(W, x2), min(H, y2)
             crop = image[y1:y2, x1:x2]
-            det.cause_analysis = analyzer.analyze_crop(crop)
+            analysis_items.append({
+                "crop_bgr": crop,
+                "class_name": det.class_name,
+            })
+            valid_detections.append(det)
+
+        analyses = analyzer.analyze_batch(analysis_items)
+        for det, analysis in zip(valid_detections, analyses):
+            det.cause_analysis = analysis
         return frame_result
 
     # ── 工具方法 ─────────────────────────────

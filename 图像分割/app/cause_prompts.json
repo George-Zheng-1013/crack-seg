@@ -1,0 +1,182 @@
+{
+  "crack": [
+    {
+      "cause": "塑性收缩",
+      "feature_prompt": "irregular short fine mesh-like cracks on concrete surface",
+      "feature_cn": "不规则短细网状裂缝",
+      "inspection_advice": ["结合浇筑后早期养护和失水情况排查"]
+    },
+    {
+      "cause": "干燥收缩",
+      "feature_prompt": "parallel straight cracks or map-like cracking along the long direction of concrete",
+      "feature_cn": "平行直线或龟裂状裂缝，沿构件长边方向延伸",
+      "inspection_advice": ["复核养护条件、环境湿度和构件收缩约束情况"]
+    },
+    {
+      "cause": "温度应力",
+      "feature_prompt": "through crack perpendicular to temperature gradient on concrete surface",
+      "feature_cn": "贯穿性裂缝，走向与温度梯度垂直",
+      "inspection_advice": ["结合温差、浇筑厚度和水化热控制记录排查"]
+    },
+    {
+      "cause": "不均匀沉降",
+      "feature_prompt": "diagonal concrete crack with wider upper part and narrower lower part",
+      "feature_cn": "斜向发展且上宽下窄的沉降裂缝",
+      "inspection_advice": ["复核基础沉降、支座变形和周边构件位移"]
+    },
+    {
+      "cause": "钢筋锈蚀膨胀",
+      "feature_prompt": "longitudinal crack along reinforcement direction with rust stain and local bulging",
+      "feature_cn": "沿钢筋方向纵向裂缝，伴随锈迹和局部鼓起",
+      "inspection_advice": ["检查保护层厚度、钢筋锈蚀和氯离子侵蚀情况"]
+    },
+    {
+      "cause": "冻融循环",
+      "feature_prompt": "map-like concrete cracks with loose edges and surface scaling",
+      "feature_cn": "地图状裂缝，边缘酥松并伴随表面剥落",
+      "inspection_advice": ["结合冻融环境、饱水状态和表面剥落范围排查"]
+    }
+  ],
+  "breakage": [
+    {
+      "cause": "冻融循环",
+      "feature_prompt": "shallow dish-shaped concrete spalling pit with powdering and loose edges",
+      "feature_cn": "浅碟状剥落凹坑，边缘疏松并有粉化现象",
+      "inspection_advice": ["检查饱水状态、冻融暴露环境和表层强度"]
+    },
+    {
+      "cause": "除冰盐侵蚀",
+      "feature_prompt": "gray white powdered concrete scaling near joints or corners",
+      "feature_cn": "接缝或边角附近灰白色粉化剥落",
+      "inspection_advice": ["排查除冰盐使用、排水条件和盐蚀范围"]
+    },
+    {
+      "cause": "钢筋锈蚀膨胀",
+      "feature_prompt": "local concrete spalling with bulging and longitudinal crack",
+      "feature_cn": "局部鼓包剥落并伴随纵向裂缝",
+      "inspection_advice": ["检查钢筋锈蚀、保护层厚度和空鼓范围"]
+    },
+    {
+      "cause": "火灾高温爆裂",
+      "feature_prompt": "large flaky concrete spalling with whitish or yellowish porous fracture surface",
+      "feature_cn": "大面积鳞片状剥落，断面发白或浅黄且多孔",
+      "inspection_advice": ["结合火灾或高温暴露记录复核材料劣化程度"]
+    },
+    {
+      "cause": "机械撞击",
+      "feature_prompt": "blocky concrete breakage with sharp impact edges",
+      "feature_cn": "块状破损，边缘尖锐并呈冲击痕迹",
+      "inspection_advice": ["检查外力撞击痕迹和局部承载影响"]
+    }
+  ],
+  "comb": [
+    {
+      "cause": "振捣不足",
+      "feature_prompt": "dense irregular small pits on concrete surface with exposed sand particles",
+      "feature_cn": "表面密集不规则小凹坑，暴露细砂或砂粒",
+      "inspection_advice": ["复核浇筑振捣工艺和局部密实度"]
+    },
+    {
+      "cause": "模板漏浆",
+      "feature_prompt": "honeycomb concrete with missing mortar and exposed coarse aggregate",
+      "feature_cn": "砂浆缺失，粗骨料外露的蜂窝状区域",
+      "inspection_advice": ["检查模板拼缝、漏浆位置和修补质量"]
+    },
+    {
+      "cause": "混凝土离析",
+      "feature_prompt": "rough honeycomb area with aggregate exposed and insufficient cement paste",
+      "feature_cn": "粗糙蜂窝区域，骨料外露且水泥浆不足",
+      "inspection_advice": ["复核配合比、坍落度和运输浇筑过程"]
+    },
+    {
+      "cause": "模板粗糙或脱模剂不当",
+      "feature_prompt": "pitted concrete surface with many shallow pinholes and rough texture",
+      "feature_cn": "浅小针孔密集、表面粗糙的麻面",
+      "inspection_advice": ["检查模板表面状态、脱模剂用量和模板湿润情况"]
+    }
+  ],
+  "hole": [
+    {
+      "cause": "严重振捣不足",
+      "feature_prompt": "deep concrete cavity with rough inner wall and exposed aggregate",
+      "feature_cn": "深空腔，内壁粗糙且可见粗骨料",
+      "inspection_advice": ["优先检查孔洞深度、范围和周边密实度"]
+    },
+    {
+      "cause": "钢筋过密阻碍流动",
+      "feature_prompt": "void around reinforcement area with unfilled concrete and rough aggregate",
+      "feature_cn": "钢筋附近混凝土未填实形成空洞，骨料粗糙外露",
+      "inspection_advice": ["复核钢筋间距、混凝土流动性和浇筑通道"]
+    },
+    {
+      "cause": "模板漏浆或支撑失效",
+      "feature_prompt": "large torn-edge concrete hole with mortar loss",
+      "feature_cn": "边缘撕裂状大型孔洞，伴随砂浆流失",
+      "inspection_advice": ["检查模板支撑、漏浆痕迹和成型缺陷位置"]
+    },
+    {
+      "cause": "杂物夹入或冷缝夹杂",
+      "feature_prompt": "concrete cavity containing foreign material or rough layered residue",
+      "feature_cn": "孔洞内夹杂异物或粗糙分层残留物",
+      "inspection_advice": ["排查浇筑间隔、施工清理和冷缝处理情况"]
+    }
+  ],
+  "reinforcement": [
+    {
+      "cause": "保护层厚度不足",
+      "feature_prompt": "visible steel reinforcement outline close to concrete surface",
+      "feature_cn": "钢筋轮廓贴近混凝土表面并清晰可见",
+      "inspection_advice": ["测量保护层厚度并复核设计要求"]
+    },
+    {
+      "cause": "钢筋位移或模板支撑失效",
+      "feature_prompt": "exposed rebar with damaged surrounding concrete cover",
+      "feature_cn": "钢筋外露且周围保护层破损",
+      "inspection_advice": ["检查钢筋定位、模板支撑和浇筑扰动情况"]
+    },
+    {
+      "cause": "腐蚀导致保护层崩解",
+      "feature_prompt": "rusty exposed reinforcement with surrounding cracking powdering and spalling",
+      "feature_cn": "锈蚀钢筋外露，周围混凝土开裂、粉化和剥落",
+      "inspection_advice": ["检查钢筋锈蚀等级、氯离子侵蚀和剥落风险"]
+    },
+    {
+      "cause": "蜂窝孔洞未修补",
+      "feature_prompt": "exposed reinforcement near honeycomb or void defect",
+      "feature_cn": "钢筋外露并邻近蜂窝或孔洞缺陷",
+      "inspection_advice": ["复核蜂窝孔洞修补质量和钢筋包裹情况"]
+    }
+  ],
+  "seepage": [
+    {
+      "cause": "水灰比过大或孔隙连通",
+      "feature_prompt": "dark damp patch on concrete surface with blurred boundary",
+      "feature_cn": "边界模糊的深色潮湿斑块",
+      "inspection_advice": ["测量局部含水率并检查混凝土密实度"]
+    },
+    {
+      "cause": "施工缝止水失效",
+      "feature_prompt": "linear wet stain along construction joint with mold or moss",
+      "feature_cn": "沿施工缝分布的线状湿迹，伴随霉斑或青苔",
+      "inspection_advice": ["检查施工缝、伸缩缝和止水节点"]
+    },
+    {
+      "cause": "预埋件密封不良",
+      "feature_prompt": "ring-shaped water stain around embedded pipe or fixture",
+      "feature_cn": "预埋管件周边环状晕染水迹",
+      "inspection_advice": ["排查预埋件根部密封和周边裂隙"]
+    },
+    {
+      "cause": "长期静水压力",
+      "feature_prompt": "water droplets or thin water flow on concrete surface",
+      "feature_cn": "表面可见水珠、滴漏或薄膜状水流",
+      "inspection_advice": ["追踪水源路径并复核背水面水压"]
+    },
+    {
+      "cause": "泛碱盐析",
+      "feature_prompt": "white crystalline efflorescence left on damp concrete surface",
+      "feature_cn": "潮湿混凝土表面残留白色结晶盐华",
+      "inspection_advice": ["检查渗水路径、碱析范围和干湿循环情况"]
+    }
+  ]
+}
