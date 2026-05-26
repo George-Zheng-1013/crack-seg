@@ -1,0 +1,1005 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>基础设施外观缺陷智能检测系统</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+/* ── 全局变量 ── */
+:root{
+  --bg:#0f1117; --bg2:#1a1d2e; --bg3:#232640;
+  --border:#2e3153; --accent:#4f8ef7; --accent2:#7c3aed;
+  --green:#22c55e; --red:#ef4444; --yellow:#f59e0b; --orange:#f97316;
+  --text:#e2e8f0; --text2:#94a3b8; --text3:#64748b;
+  --radius:10px; --shadow:0 4px 24px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+a{color:var(--accent);text-decoration:none}
+button{cursor:pointer;border:none;outline:none;font-family:inherit}
+input,select{font-family:inherit;outline:none}
+
+/* ── 顶栏 ── */
+header{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:56px;background:var(--bg2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+.logo{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;letter-spacing:.5px}
+.logo-icon{width:32px;height:32px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px}
+.header-right{display:flex;align-items:center;gap:12px}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.model-badge{font-size:11px;color:var(--text2);background:var(--bg3);padding:3px 10px;border-radius:20px;border:1px solid var(--border)}
+
+/* ── 布局 ── */
+.layout{display:grid;grid-template-columns:320px 1fr 300px;height:calc(100vh - 56px);gap:0}
+.panel{background:var(--bg2);overflow-y:auto;border-right:1px solid var(--border)}
+.panel:last-child{border-right:none;border-left:1px solid var(--border)}
+.panel-title{font-size:12px;font-weight:600;letter-spacing:.08em;color:var(--text2);text-transform:uppercase;padding:14px 16px 8px;border-bottom:1px solid var(--border)}
+
+/* ── 左侧面板 ── */
+.left-panel{}
+.section{padding:14px 16px;border-bottom:1px solid var(--border)}
+.section-label{font-size:11px;color:var(--text3);margin-bottom:8px;font-weight:600;letter-spacing:.06em;text-transform:uppercase}
+
+/* 上传区 */
+.upload-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:24px;text-align:center;cursor:pointer;transition:all .2s;position:relative}
+.upload-zone:hover,.upload-zone.drag-over{border-color:var(--accent);background:rgba(79,142,247,.06)}
+.upload-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.upload-icon{font-size:32px;margin-bottom:8px}
+.upload-text{font-size:13px;color:var(--text2)}
+.upload-hint{font-size:11px;color:var(--text3);margin-top:4px}
+
+/* 标签页 */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--border)}
+.tab{flex:1;padding:9px 0;font-size:12px;font-weight:600;text-align:center;color:var(--text3);background:transparent;border-bottom:2px solid transparent;transition:all .15s}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent);background:rgba(79,142,247,.06)}
+.tab:hover:not(.active){color:var(--text);background:var(--bg3)}
+
+/* 参数 */
+.param-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.param-label{font-size:12px;color:var(--text2)}
+.param-value{font-size:12px;color:var(--accent);min-width:36px;text-align:right}
+input[type=range]{width:100%;accent-color:var(--accent);height:4px;margin:4px 0 10px}
+
+/* 按钮 */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:7px;font-size:13px;font-weight:600;transition:all .15s}
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.btn-primary:hover{opacity:.9;transform:translateY(-1px)}
+.btn-primary:disabled{opacity:.4;transform:none;cursor:not-allowed}
+.btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent)}
+.btn-sm{padding:5px 10px;font-size:12px}
+.btn-full{width:100%;justify-content:center}
+
+/* 进度条 */
+.progress-wrap{height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;margin:8px 0}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:2px;transition:width .3s;width:0%}
+
+/* 数据集样本 */
+.samples-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:0}
+.sample-thumb{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;cursor:pointer;border:2px solid transparent;transition:all .15s}
+.sample-thumb:hover{border-color:var(--accent);transform:scale(1.03)}
+
+/* ── 中间：画布区 ── */
+.canvas-area{display:flex;flex-direction:column;background:var(--bg);padding:16px}
+.canvas-toolbar{display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.canvas-container{flex:1;position:relative;background:#0a0c14;border-radius:var(--radius);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;overflow:hidden;min-height:400px}
+#result-canvas{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px}
+.canvas-placeholder{text-align:center;color:var(--text3)}
+.canvas-placeholder .big-icon{font-size:64px;margin-bottom:12px;opacity:.3}
+.canvas-placeholder p{font-size:14px}
+.loading-overlay{position:absolute;inset:0;background:rgba(10,12,20,.8);display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:var(--radius)}
+.spinner{width:44px;height:44px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;margin-bottom:12px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading-text{font-size:14px;color:var(--text2)}
+
+/* 视频时间线 */
+.timeline{margin-top:12px;display:none}
+.timeline.visible{display:block}
+.timeline-bar{height:40px;background:var(--bg2);border-radius:6px;position:relative;overflow:hidden;border:1px solid var(--border)}
+.timeline-track{height:100%;display:flex;align-items:stretch}
+.timeline-segment{height:100%;min-width:2px;background:var(--bg3);border-right:1px solid var(--bg);cursor:pointer;transition:opacity .15s;position:relative}
+.timeline-segment.has-defect{background:rgba(239,68,68,.6)}
+.timeline-segment:hover{opacity:.7}
+.timeline-label{font-size:11px;color:var(--text3);margin-top:4px;display:flex;justify-content:space-between}
+
+/* ── 右侧：结果面板 ── */
+.right-panel{}
+.result-summary{padding:12px 14px;border-bottom:1px solid var(--border)}
+.stat-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.stat-card{background:var(--bg3);border-radius:8px;padding:10px;text-align:center}
+.stat-value{font-size:22px;font-weight:700;color:var(--accent)}
+.stat-label{font-size:10px;color:var(--text3);margin-top:2px;text-transform:uppercase;letter-spacing:.06em}
+.stat-card.red .stat-value{color:var(--red)}
+.stat-card.green .stat-value{color:var(--green)}
+.stat-card.yellow .stat-value{color:var(--yellow)}
+
+/* 检测列表 */
+.det-list{padding:8px 14px}
+.det-item{background:var(--bg3);border-radius:8px;padding:10px;margin-bottom:6px;border:1px solid var(--border);cursor:pointer;transition:all .15s;position:relative}
+.det-item:hover{border-color:var(--accent);background:rgba(79,142,247,.08)}
+.det-item-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.det-class{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+.det-dot{width:8px;height:8px;border-radius:50%}
+.det-conf{font-size:12px;color:var(--text2)}
+.conf-bar{height:3px;background:var(--bg2);border-radius:2px;overflow:hidden;margin:4px 0}
+.conf-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--green),var(--accent))}
+.det-coords{font-size:11px;color:var(--text3);font-family:monospace}
+.det-index{position:absolute;top:8px;right:8px;font-size:10px;color:var(--text3);background:var(--bg2);padding:1px 5px;border-radius:4px}
+
+/* 图表 */
+.chart-section{padding:12px 14px;border-top:1px solid var(--border)}
+.chart-wrap{position:relative;height:160px}
+
+/* 导出区 */
+.export-section{padding:12px 14px;border-top:1px solid var(--border)}
+.export-btns{display:flex;flex-direction:column;gap:6px}
+
+/* 历史记录 */
+.history-item{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:7px;cursor:pointer;transition:background .15s;border-bottom:1px solid var(--border)}
+.history-item:hover{background:var(--bg3)}
+.history-thumb{width:40px;height:40px;border-radius:6px;object-fit:cover;background:var(--bg3);flex-shrink:0}
+.history-info{flex:1;min-width:0}
+.history-name{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.history-meta{font-size:11px;color:var(--text3)}
+
+/* 通知 */
+.toast-container{position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px}
+.toast{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:12px 16px;font-size:13px;display:flex;align-items:center;gap:8px;animation:slideIn .2s ease;box-shadow:var(--shadow);min-width:240px}
+.toast.success{border-color:var(--green)}
+.toast.error  {border-color:var(--red)}
+.toast.info   {border-color:var(--accent)}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+@keyframes slideOut{from{transform:translateX(0);opacity:1}to{transform:translateX(100%);opacity:0}}
+
+/* 响应式 */
+@media(max-width:1200px){.layout{grid-template-columns:280px 1fr 260px}}
+@media(max-width:900px) {.layout{grid-template-columns:1fr}.panel:not(:first-child){border-left:none}}
+
+/* 空态 */
+.empty-state{text-align:center;padding:32px 16px;color:var(--text3)}
+.empty-icon{font-size:40px;margin-bottom:10px;opacity:.4}
+
+/* toggle */
+.toggle-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.toggle-label{font-size:12px;color:var(--text2)}
+.toggle{position:relative;width:36px;height:20px;display:inline-block}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;cursor:pointer;inset:0;background:var(--bg3);border-radius:20px;border:1px solid var(--border);transition:.2s}
+.toggle-slider:before{content:'';position:absolute;width:14px;height:14px;left:2px;bottom:2px;background:var(--text3);border-radius:50%;transition:.2s}
+input:checked + .toggle-slider{background:var(--accent);border-color:var(--accent)}
+input:checked + .toggle-slider:before{background:#fff;transform:translateX(16px)}
+</style>
+</head>
+<body>
+
+<!-- 顶栏 -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">🏗</div>
+    <span>基础设施缺陷检测系统</span>
+  </div>
+  <div class="header-right">
+    <span id="status-text" class="model-badge">加载中...</span>
+    <div class="status-dot" id="status-dot" style="background:var(--yellow)"></div>
+  </div>
+</header>
+
+<!-- 主体布局 -->
+<div class="layout">
+
+  <!-- ══════════ 左侧控制面板 ══════════ -->
+  <div class="panel left-panel">
+    <div class="panel-title">检测控制</div>
+
+    <!-- 模式标签 -->
+    <div class="tabs">
+      <button class="tab active" data-tab="image" onclick="switchTab('image')">🖼 图像</button>
+      <button class="tab" data-tab="batch" onclick="switchTab('batch')">📦 批量</button>
+      <button class="tab" data-tab="video" onclick="switchTab('video')">🎬 视频</button>
+      <button class="tab" data-tab="dataset" onclick="switchTab('dataset')">🗂 数据集</button>
+    </div>
+
+    <!-- 图像模式 -->
+    <div id="tab-image" class="section" style="display:block">
+      <div class="section-label">上传图像</div>
+      <div class="upload-zone" id="upload-zone-image" ondragover="handleDragOver(event)" ondragleave="handleDragLeave(event)" ondrop="handleDrop(event,'image')">
+        <input type="file" id="file-image" accept="image/*" onchange="onFileSelect(event,'image')"/>
+        <div class="upload-icon">🖼</div>
+        <div class="upload-text">拖拽或点击上传图像</div>
+        <div class="upload-hint">支持 JPG / PNG / BMP / TIFF</div>
+      </div>
+      <div id="image-preview-wrap" style="margin-top:8px;display:none">
+        <img id="image-preview" style="width:100%;border-radius:8px;max-height:160px;object-fit:cover"/>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px" id="image-preview-name"></div>
+      </div>
+    </div>
+
+    <!-- 批量模式 -->
+    <div id="tab-batch" class="section" style="display:none">
+      <div class="section-label">批量上传（最多 50 张）</div>
+      <div class="upload-zone" id="upload-zone-batch">
+        <input type="file" id="file-batch" accept="image/*" multiple onchange="onFileSelect(event,'batch')"/>
+        <div class="upload-icon">📦</div>
+        <div class="upload-text">选择多张图像</div>
+        <div class="upload-hint" id="batch-count">未选择文件</div>
+      </div>
+    </div>
+
+    <!-- 视频模式 -->
+    <div id="tab-video" class="section" style="display:none">
+      <div class="section-label">上传视频</div>
+      <div class="upload-zone" id="upload-zone-video">
+        <input type="file" id="file-video" accept="video/*" onchange="onFileSelect(event,'video')"/>
+        <div class="upload-icon">🎬</div>
+        <div class="upload-text">拖拽或点击上传视频</div>
+        <div class="upload-hint">支持 MP4 / AVI / MOV / MKV</div>
+      </div>
+      <div class="section-label" style="margin-top:12px">采样设置</div>
+      <div class="param-row">
+        <span class="param-label">帧采样间隔</span>
+        <span class="param-value" id="interval-val">5</span>
+      </div>
+      <input type="range" min="1" max="30" value="5" id="interval-slider" oninput="document.getElementById('interval-val').textContent=this.value"/>
+      <div class="param-row">
+        <span class="param-label">最大帧数</span>
+        <span class="param-value" id="maxframes-val">200</span>
+      </div>
+      <input type="range" min="10" max="500" step="10" value="200" id="maxframes-slider" oninput="document.getElementById('maxframes-val').textContent=this.value"/>
+    </div>
+
+    <!-- 数据集模式 -->
+    <div id="tab-dataset" class="section" style="display:none">
+      <div class="section-label">测试集样本</div>
+      <div id="samples-grid" class="samples-grid">
+        <div style="color:var(--text3);font-size:12px;grid-column:1/-1">加载中...</div>
+      </div>
+    </div>
+
+    <!-- 检测参数 -->
+    <div class="section">
+      <div class="section-label">检测参数</div>
+      <div class="param-row">
+        <span class="param-label">置信度阈值</span>
+        <span class="param-value" id="conf-val">0.25</span>
+      </div>
+      <input type="range" min="0.05" max="0.95" step="0.05" value="0.25" id="conf-slider"
+             oninput="document.getElementById('conf-val').textContent=parseFloat(this.value).toFixed(2)"/>
+      <div class="param-row">
+        <span class="param-label">IOU 阈值</span>
+        <span class="param-value" id="iou-val">0.45</span>
+      </div>
+      <input type="range" min="0.1" max="0.9" step="0.05" value="0.45" id="iou-slider"
+             oninput="document.getElementById('iou-val').textContent=parseFloat(this.value).toFixed(2)"/>
+    </div>
+
+    <!-- 显示选项 -->
+    <div class="section">
+      <div class="section-label">显示选项</div>
+      <div class="toggle-row">
+        <span class="toggle-label">显示分割掩码</span>
+        <label class="toggle"><input type="checkbox" id="opt-masks" checked/><span class="toggle-slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label">显示边界框</span>
+        <label class="toggle"><input type="checkbox" id="opt-boxes" checked/><span class="toggle-slider"></span></label>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label">显示标签</span>
+        <label class="toggle"><input type="checkbox" id="opt-labels" checked/><span class="toggle-slider"></span></label>
+      </div>
+    </div>
+
+    <!-- 开始检测 -->
+    <div class="section">
+      <div id="progress-wrap" class="progress-wrap" style="display:none">
+        <div class="progress-bar" id="progress-bar"></div>
+      </div>
+      <button class="btn btn-primary btn-full" id="detect-btn" onclick="startDetection()">
+        <span>🔍</span> 开始检测
+      </button>
+    </div>
+
+    <!-- 历史记录 -->
+    <div class="section">
+      <div class="section-label">最近检测记录</div>
+      <div id="history-list">
+        <div class="empty-state"><div class="empty-icon">📋</div><p>暂无记录</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 中间：可视化画布 ══════════ -->
+  <div class="canvas-area">
+    <div class="canvas-toolbar">
+      <button class="btn btn-ghost btn-sm" onclick="zoomIn()">🔍+</button>
+      <button class="btn btn-ghost btn-sm" onclick="zoomOut()">🔍-</button>
+      <button class="btn btn-ghost btn-sm" onclick="resetZoom()">⊞ 适应</button>
+      <button class="btn btn-ghost btn-sm" onclick="toggleOverlay()">👁 切换叠加</button>
+      <span style="flex:1"></span>
+      <span id="canvas-info" style="font-size:11px;color:var(--text3)"></span>
+      <button class="btn btn-ghost btn-sm" onclick="downloadCurrentImage()">💾 保存图像</button>
+    </div>
+
+    <div class="canvas-container" id="canvas-container">
+      <div class="canvas-placeholder">
+        <div class="big-icon">🔬</div>
+        <p>上传图像或选择数据集样本</p>
+        <p style="font-size:12px;margin-top:6px">支持图像 / 批量 / 视频检测</p>
+      </div>
+      <div class="loading-overlay" id="loading-overlay" style="display:none">
+        <div class="spinner"></div>
+        <div class="loading-text" id="loading-text">正在推理...</div>
+      </div>
+    </div>
+
+    <!-- 批量缩略图 -->
+    <div id="batch-thumbs" style="display:none;margin-top:10px;overflow-x:auto">
+      <div id="batch-thumbs-inner" style="display:flex;gap:8px;padding:4px"></div>
+    </div>
+
+    <!-- 视频时间线 -->
+    <div class="timeline" id="timeline">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px">视频帧时间线（红色=有缺陷）</div>
+      <div class="timeline-bar"><div class="timeline-track" id="timeline-track"></div></div>
+      <div class="timeline-label">
+        <span id="tl-start">0s</span>
+        <span id="tl-mid"></span>
+        <span id="tl-end"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 右侧：结果面板 ══════════ -->
+  <div class="panel right-panel">
+    <div class="panel-title">检测结果</div>
+
+    <!-- 统计卡片 -->
+    <div class="result-summary">
+      <div class="stat-row">
+        <div class="stat-card red">
+          <div class="stat-value" id="stat-total">–</div>
+          <div class="stat-label">缺陷总数</div>
+        </div>
+        <div class="stat-card yellow">
+          <div class="stat-value" id="stat-time">–</div>
+          <div class="stat-label">推理(ms)</div>
+        </div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-card green">
+          <div class="stat-value" id="stat-conf">–</div>
+          <div class="stat-label">最高置信度</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-frames">–</div>
+          <div class="stat-label">帧/图数</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 缺陷明细 -->
+    <div class="panel-title" style="margin-top:0">缺陷明细</div>
+    <div class="det-list" id="det-list">
+      <div class="empty-state"><div class="empty-icon">🔎</div><p>暂无检测结果</p></div>
+    </div>
+
+    <!-- 类别图表 -->
+    <div class="chart-section">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">类别分布</div>
+      <div class="chart-wrap">
+        <canvas id="chart-class"></canvas>
+      </div>
+    </div>
+
+    <!-- 导出 -->
+    <div class="export-section">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;font-weight:600;text-transform:uppercase;letter-spacing:.06em">导出报告</div>
+      <div class="export-btns">
+        <button class="btn btn-ghost btn-sm btn-full" id="btn-excel" onclick="exportReport('excel')" disabled>
+          📊 导出 Excel 报告
+        </button>
+        <button class="btn btn-ghost btn-sm btn-full" id="btn-pdf" onclick="exportReport('pdf')" disabled>
+          📄 导出 PDF 报告（含图像）
+        </button>
+        <button class="btn btn-ghost btn-sm btn-full" id="btn-json" onclick="exportJSON()" disabled>
+          {} 导出 JSON 数据
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 通知容器 -->
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+/* ══════════════════════════════════════════════════
+   全局状态
+══════════════════════════════════════════════════ */
+let currentTab      = 'image';
+let currentSession  = null;
+let currentResult   = null;   // 当前帧结果（单图或选中帧）
+let allResults      = [];     // 所有帧结果
+let originalImage   = null;   // 当前显示的原始图 (data-url)
+let annotatedImage  = null;   // 标注图 (data-url)
+let showingOverlay  = true;
+let classChart      = null;
+let currentZoom     = 1.0;
+let history_records = [];
+let sampleFilenames = [];
+
+const API = '';   // 同源
+
+/* ══════════════════════════════════════════════════
+   初始化
+══════════════════════════════════════════════════ */
+window.addEventListener('DOMContentLoaded', async () => {
+  await checkHealth();
+  await loadDatasetSamples();
+});
+
+async function checkHealth() {
+  try {
+    const r = await fetch(`${API}/api/health`);
+    const d = await r.json();
+    if (d.status === 'ok' && d.model_exists) {
+      const info = await (await fetch(`${API}/api/model/info`)).json();
+      document.getElementById('status-text').textContent = `YOLOv8-Seg | ${Object.values(info.class_names).join(', ')}`;
+      document.getElementById('status-dot').style.background = 'var(--green)';
+    } else {
+      document.getElementById('status-text').textContent = '模型文件缺失';
+      document.getElementById('status-dot').style.background = 'var(--red)';
+    }
+  } catch(e) {
+    document.getElementById('status-text').textContent = '后端未连接';
+    document.getElementById('status-dot').style.background = 'var(--red)';
+  }
+}
+
+async function loadDatasetSamples() {
+  try {
+    const r = await fetch(`${API}/api/dataset/samples?limit=12`);
+    const d = await r.json();
+    sampleFilenames = d.images || [];
+    renderSamples();
+  } catch(e) {}
+}
+
+function renderSamples() {
+  const grid = document.getElementById('samples-grid');
+  if (!sampleFilenames.length) {
+    grid.innerHTML = '<div style="color:var(--text3);font-size:12px;grid-column:1/-1">数据集未找到</div>';
+    return;
+  }
+  grid.innerHTML = sampleFilenames.map(name => `
+    <img class="sample-thumb" src="${API}/api/dataset/image/${name}"
+         title="${name}" onclick="detectDatasetSample('${name}')"
+         onerror="this.style.display='none'"/>
+  `).join('');
+}
+
+/* ══════════════════════════════════════════════════
+   标签切换
+══════════════════════════════════════════════════ */
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  ['image','batch','video','dataset'].forEach(t => {
+    document.getElementById(`tab-${t}`).style.display = t === tab ? 'block' : 'none';
+  });
+}
+
+/* ══════════════════════════════════════════════════
+   文件拖拽
+══════════════════════════════════════════════════ */
+function handleDragOver(e) {
+  e.preventDefault();
+  e.currentTarget.classList.add('drag-over');
+}
+function handleDragLeave(e) {
+  e.currentTarget.classList.remove('drag-over');
+}
+function handleDrop(e, mode) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const files = e.dataTransfer.files;
+  if (!files.length) return;
+  if (mode === 'image' && files[0]) previewImageFile(files[0]);
+}
+
+function onFileSelect(e, mode) {
+  const files = e.target.files;
+  if (!files.length) return;
+  if (mode === 'image') previewImageFile(files[0]);
+  if (mode === 'batch') document.getElementById('batch-count').textContent = `已选择 ${files.length} 张图像`;
+}
+
+function previewImageFile(file) {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    originalImage = ev.target.result;
+    document.getElementById('image-preview').src = ev.target.result;
+    document.getElementById('image-preview-name').textContent = file.name;
+    document.getElementById('image-preview-wrap').style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+}
+
+/* ══════════════════════════════════════════════════
+   检测入口
+══════════════════════════════════════════════════ */
+async function startDetection() {
+  const conf = parseFloat(document.getElementById('conf-slider').value);
+  const iou  = parseFloat(document.getElementById('iou-slider').value);
+
+  if (currentTab === 'image')   return detectImage(conf, iou);
+  if (currentTab === 'batch')   return detectBatch(conf, iou);
+  if (currentTab === 'video')   return detectVideo(conf, iou);
+  if (currentTab === 'dataset') return toast('请在数据集面板中点击样本图片', 'info');
+}
+
+async function detectImage(conf, iou) {
+  const fileInput = document.getElementById('file-image');
+  if (!fileInput.files.length) { toast('请先选择图像文件', 'error'); return; }
+  const file = fileInput.files[0];
+
+  setLoading(true, '图像推理中...');
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('conf', conf);
+  fd.append('iou',  iou);
+
+  try {
+    const r = await fetch(`${API}/api/detect/image`, { method:'POST', body:fd });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail||'推理失败'); }
+    const data = await r.json();
+    handleSingleResult(data);
+    toast(`检测完成：发现 ${data.summary.total_defects} 处缺陷`, 'success');
+  } catch(e) {
+    toast(`错误: ${e.message}`, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function detectBatch(conf, iou) {
+  const fileInput = document.getElementById('file-batch');
+  if (!fileInput.files.length) { toast('请先选择图像文件', 'error'); return; }
+
+  setLoading(true, `批量推理 ${fileInput.files.length} 张图像...`);
+  const fd = new FormData();
+  for (const f of fileInput.files) fd.append('files', f);
+  fd.append('conf', conf);
+  fd.append('iou',  iou);
+
+  try {
+    const r = await fetch(`${API}/api/detect/batch`, { method:'POST', body:fd });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail||'批量推理失败'); }
+    const data = await r.json();
+    handleBatchResult(data);
+    toast(`批量完成：${data.processed} 张，共 ${data.summary.total_defects} 处缺陷`, 'success');
+  } catch(e) {
+    toast(`错误: ${e.message}`, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function detectVideo(conf, iou) {
+  const fileInput = document.getElementById('file-video');
+  if (!fileInput.files.length) { toast('请先选择视频文件', 'error'); return; }
+
+  const interval  = parseInt(document.getElementById('interval-slider').value);
+  const maxFrames = parseInt(document.getElementById('maxframes-slider').value);
+
+  setLoading(true, '视频分析中，请稍候...');
+  showProgress(0);
+
+  const fd = new FormData();
+  fd.append('file', fileInput.files[0]);
+  fd.append('conf', conf);
+  fd.append('iou',  iou);
+  fd.append('sample_interval', interval);
+  fd.append('max_frames', maxFrames);
+
+  try {
+    const r = await fetch(`${API}/api/detect/video`, { method:'POST', body:fd });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail||'视频处理失败'); }
+    const data = await r.json();
+    handleVideoResult(data);
+    toast(`视频分析完成：${data.total_frames} 帧，${data.summary.defective_frames} 帧含缺陷`, 'success');
+  } catch(e) {
+    toast(`错误: ${e.message}`, 'error');
+  } finally {
+    setLoading(false);
+    hideProgress();
+  }
+}
+
+async function detectDatasetSample(filename) {
+  const conf = parseFloat(document.getElementById('conf-slider').value);
+  const iou  = parseFloat(document.getElementById('iou-slider').value);
+
+  setLoading(true, `检测 ${filename}...`);
+  const fd = new FormData();
+  fd.append('conf', conf);
+  fd.append('iou',  iou);
+
+  try {
+    const r = await fetch(`${API}/api/dataset/detect/${filename}`, { method:'POST', body:fd });
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail||'检测失败'); }
+    const data = await r.json();
+    // 加载原图用于叠加对比
+    originalImage = `${API}/api/dataset/image/${filename}`;
+    handleSingleResult(data);
+    toast(`${filename}: 发现 ${data.summary.total_defects} 处缺陷`, 'success');
+  } catch(e) {
+    toast(`错误: ${e.message}`, 'error');
+  } finally {
+    setLoading(false);
+  }
+}
+
+/* ══════════════════════════════════════════════════
+   结果处理
+══════════════════════════════════════════════════ */
+function handleSingleResult(data) {
+  currentSession = data.session_id;
+  allResults     = [data.result];
+  currentResult  = data.result;
+  annotatedImage = data.image_b64;
+
+  showImage(annotatedImage);
+  renderDetections(data.result.detections);
+  renderStats({
+    total  : data.summary.total_defects,
+    time   : data.summary.inference_time_ms,
+    conf   : data.result.detections.length ? Math.max(...data.result.detections.map(d=>d.confidence)) : 0,
+    frames : 1,
+  });
+  renderClassChart(data.summary.by_class);
+  enableExport(true);
+  addHistory({ name: data.source_name||'image', thumb: annotatedImage, total: data.summary.total_defects });
+  document.getElementById('canvas-info').textContent = data.summary.image_size || '';
+  document.getElementById('timeline').classList.remove('visible');
+  document.getElementById('batch-thumbs').style.display = 'none';
+}
+
+function handleBatchResult(data) {
+  currentSession = data.session_id;
+  allResults     = data.results;
+  currentResult  = data.results[0] || null;
+
+  // 显示第一张
+  if (data.thumbnails_b64.length) {
+    annotatedImage = data.thumbnails_b64[0];
+    showImage(annotatedImage);
+  }
+
+  // 批量缩略图条
+  const inner = document.getElementById('batch-thumbs-inner');
+  inner.innerHTML = data.thumbnails_b64.map((b64, i) => `
+    <img src="${b64}" style="height:80px;border-radius:6px;cursor:pointer;border:2px solid ${i===0?'var(--accent)':'var(--border)'}"
+         onclick="selectBatchFrame(${i},'${data.session_id}')" title="图像 ${i+1}: ${data.results[i]?.total_defects||0} 处缺陷"/>
+  `).join('');
+  document.getElementById('batch-thumbs').style.display = 'block';
+
+  if (currentResult) renderDetections(currentResult.detections);
+  renderStats({
+    total  : data.summary.total_defects,
+    time   : data.summary.avg_inference_ms,
+    conf   : allResults.flatMap(r=>r.detections).reduce((mx,d)=>Math.max(mx,d.confidence),0),
+    frames : data.processed,
+  });
+  renderClassChart(data.summary.by_class);
+  enableExport(true);
+  document.getElementById('timeline').classList.remove('visible');
+}
+
+function handleVideoResult(data) {
+  currentSession = data.session_id;
+  allResults     = data.results;
+  currentResult  = data.results[0] || null;
+
+  // 清空画布，等用户点时间线
+  const container = document.getElementById('canvas-container');
+  container.innerHTML = `
+    <div class="canvas-placeholder">
+      <div class="big-icon">🎬</div>
+      <p>视频处理完成 ${data.total_frames} 帧</p>
+      <p style="font-size:12px;margin-top:6px">点击下方时间线查看各帧</p>
+    </div>
+    <div class="loading-overlay" id="loading-overlay" style="display:none">
+      <div class="spinner"></div>
+      <div class="loading-text" id="loading-text">正在推理...</div>
+    </div>
+  `;
+
+  // 时间线
+  renderTimeline(data.results);
+
+  renderStats({
+    total  : data.summary.total_defects,
+    time   : data.summary.avg_inference_ms,
+    conf   : allResults.flatMap(r=>r.detections).reduce((mx,d)=>Math.max(mx,d.confidence),0),
+    frames : data.total_frames,
+  });
+  renderClassChart(data.summary.by_class);
+  enableExport(true);
+  document.getElementById('batch-thumbs').style.display = 'none';
+}
+
+function selectBatchFrame(idx) {
+  if (idx >= allResults.length) return;
+  currentResult = allResults[idx];
+  // 高亮缩略图
+  document.querySelectorAll('#batch-thumbs-inner img').forEach((el,i)=>{
+    el.style.borderColor = i===idx ? 'var(--accent)' : 'var(--border)';
+  });
+  renderDetections(currentResult.detections);
+}
+
+/* ══════════════════════════════════════════════════
+   UI 渲染
+══════════════════════════════════════════════════ */
+function showImage(src) {
+  const container = document.getElementById('canvas-container');
+  container.innerHTML = `
+    <img id="result-canvas" src="${src}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;transform-origin:center;transition:transform .2s"/>
+    <div class="loading-overlay" id="loading-overlay" style="display:none">
+      <div class="spinner"></div>
+      <div class="loading-text" id="loading-text">正在推理...</div>
+    </div>
+  `;
+  currentZoom = 1.0;
+}
+
+function renderDetections(detections) {
+  const list = document.getElementById('det-list');
+  if (!detections || !detections.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">✅</div><p>未检测到缺陷</p></div>';
+    return;
+  }
+
+  const colors = ['#4f8ef7','#ef4444','#f97316','#a855f7','#22c55e','#eab308','#06b6d4','#ec4899'];
+  list.innerHTML = detections.map((d, i) => {
+    const col = colors[d.class_id % colors.length];
+    const confPct = (d.confidence * 100).toFixed(1);
+    return `
+      <div class="det-item" onclick="highlightDetection(${i})">
+        <div class="det-index">#${d.det_id}</div>
+        <div class="det-item-header">
+          <div class="det-class">
+            <div class="det-dot" style="background:${col}"></div>
+            ${d.class_name}
+          </div>
+          <div class="det-conf">${confPct}%</div>
+        </div>
+        <div class="conf-bar"><div class="conf-fill" style="width:${confPct}%"></div></div>
+        <div class="det-coords">
+          bbox [${d.bbox.join(', ')}]<br/>
+          center (${d.center[0]}, ${d.center[1]}) | ${d.width}×${d.height}px
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderStats({total, time, conf, frames}) {
+  document.getElementById('stat-total').textContent = total;
+  document.getElementById('stat-time').textContent  = typeof time === 'number' ? time.toFixed(1) : time;
+  document.getElementById('stat-conf').textContent  = conf ? conf.toFixed(3) : '–';
+  document.getElementById('stat-frames').textContent = frames;
+}
+
+function renderClassChart(byClass) {
+  const ctx = document.getElementById('chart-class').getContext('2d');
+  if (classChart) classChart.destroy();
+
+  const labels = Object.keys(byClass);
+  const values = Object.values(byClass);
+  if (!labels.length) return;
+
+  const colors = ['#4f8ef7','#ef4444','#f97316','#a855f7','#22c55e','#eab308'];
+  classChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: colors.slice(0, labels.length), borderWidth: 0 }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position:'right', labels:{ color:'#94a3b8', font:{ size:11 }, boxWidth:12 } },
+        tooltip: { callbacks: { label: ctx => ` ${ctx.label}: ${ctx.raw}` } },
+      },
+    },
+  });
+}
+
+function renderTimeline(results) {
+  const tl = document.getElementById('timeline');
+  tl.classList.add('visible');
+
+  const track = document.getElementById('timeline-track');
+  const maxTs = results.length ? results[results.length-1].timestamp_sec : 0;
+
+  document.getElementById('tl-start').textContent = '0s';
+  document.getElementById('tl-mid').textContent   = `${(maxTs/2).toFixed(1)}s`;
+  document.getElementById('tl-end').textContent   = `${maxTs.toFixed(1)}s`;
+
+  track.innerHTML = results.map((r, i) => `
+    <div class="timeline-segment ${r.total_defects > 0 ? 'has-defect' : ''}"
+         style="flex:1"
+         title="帧${r.frame_index} ${r.timestamp_sec.toFixed(2)}s | 缺陷:${r.total_defects}"
+         onclick="selectVideoFrame(${i})">
+    </div>
+  `).join('');
+}
+
+function selectVideoFrame(idx) {
+  if (idx >= allResults.length) return;
+  currentResult = allResults[idx];
+  renderDetections(currentResult.detections);
+  // 高亮时间线段
+  document.querySelectorAll('.timeline-segment').forEach((el,i)=>{
+    el.style.opacity = i===idx ? '1' : '';
+    el.style.outline = i===idx ? '2px solid var(--accent)' : '';
+  });
+}
+
+function highlightDetection(idx) {
+  document.querySelectorAll('.det-item').forEach((el,i)=>{
+    el.style.borderColor = i===idx ? 'var(--accent)' : '';
+    el.style.background  = i===idx ? 'rgba(79,142,247,.12)' : '';
+  });
+}
+
+function addHistory(item) {
+  history_records.unshift(item);
+  if (history_records.length > 8) history_records.pop();
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = document.getElementById('history-list');
+  if (!history_records.length) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">📋</div><p>暂无记录</p></div>';
+    return;
+  }
+  list.innerHTML = history_records.map((h, i) => `
+    <div class="history-item" onclick="reloadHistory(${i})">
+      <img class="history-thumb" src="${h.thumb}" onerror="this.style.background='var(--bg3)'"/>
+      <div class="history-info">
+        <div class="history-name">${h.name}</div>
+        <div class="history-meta">${h.total} 处缺陷</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function reloadHistory(i) {
+  const h = history_records[i];
+  showImage(h.thumb);
+  annotatedImage = h.thumb;
+}
+
+/* ══════════════════════════════════════════════════
+   画布操作
+══════════════════════════════════════════════════ */
+function zoomIn()  { setZoom(currentZoom * 1.25); }
+function zoomOut() { setZoom(currentZoom * 0.8);  }
+function resetZoom(){ setZoom(1.0); }
+
+function setZoom(z) {
+  currentZoom = Math.min(Math.max(z, 0.2), 5);
+  const img = document.getElementById('result-canvas');
+  if (img) img.style.transform = `scale(${currentZoom})`;
+}
+
+function toggleOverlay() {
+  showingOverlay = !showingOverlay;
+  const img = document.getElementById('result-canvas');
+  if (!img) return;
+  img.src = showingOverlay ? annotatedImage : (originalImage || annotatedImage);
+}
+
+function downloadCurrentImage() {
+  if (!annotatedImage) { toast('暂无图像可保存', 'error'); return; }
+  const a = document.createElement('a');
+  a.href     = annotatedImage;
+  a.download = `defect_detection_${Date.now()}.jpg`;
+  a.click();
+  toast('图像已保存', 'success');
+}
+
+/* ══════════════════════════════════════════════════
+   报告导出
+══════════════════════════════════════════════════ */
+async function exportReport(type) {
+  if (!currentSession) { toast('请先完成检测', 'error'); return; }
+  const url = type === 'excel'
+    ? `${API}/api/report/${currentSession}/excel`
+    : `${API}/api/report/${currentSession}/pdf`;
+
+  toast(`正在生成 ${type.toUpperCase()} 报告...`, 'info');
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('生成失败');
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href     = objUrl;
+    a.download = `defect_report_${Date.now()}.${type === 'excel' ? 'xlsx' : 'pdf'}`;
+    a.click();
+    URL.revokeObjectURL(objUrl);
+    toast(`${type.toUpperCase()} 报告已下载`, 'success');
+  } catch(e) {
+    toast(`导出失败: ${e.message}`, 'error');
+  }
+}
+
+function exportJSON() {
+  if (!allResults.length) { toast('暂无数据', 'error'); return; }
+  const data = {
+    session_id   : currentSession,
+    exported_at  : new Date().toISOString(),
+    total_frames : allResults.length,
+    total_defects: allResults.reduce((s,r)=>s+r.total_defects,0),
+    results      : allResults,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = `defect_data_${Date.now()}.json`;
+  a.click();
+  toast('JSON 数据已导出', 'success');
+}
+
+/* ══════════════════════════════════════════════════
+   工具函数
+══════════════════════════════════════════════════ */
+function setLoading(show, text='正在处理...') {
+  const btn = document.getElementById('detect-btn');
+  btn.disabled = show;
+  btn.textContent = show ? '⌛ 处理中...' : '🔍 开始检测';
+
+  const overlay = document.getElementById('loading-overlay');
+  if (overlay) {
+    overlay.style.display = show ? 'flex' : 'none';
+    const lt = document.getElementById('loading-text');
+    if (lt) lt.textContent = text;
+  }
+}
+
+function showProgress(pct) {
+  document.getElementById('progress-wrap').style.display = 'block';
+  document.getElementById('progress-bar').style.width    = `${pct}%`;
+}
+function hideProgress() {
+  document.getElementById('progress-wrap').style.display = 'none';
+  document.getElementById('progress-bar').style.width    = '0%';
+}
+
+function enableExport(on) {
+  ['btn-excel','btn-pdf','btn-json'].forEach(id=>{
+    document.getElementById(id).disabled = !on;
+  });
+}
+
+function toast(msg, type='info') {
+  const container = document.getElementById('toast-container');
+  const icons = { success:'✅', error:'❌', info:'ℹ️' };
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<span>${icons[type]||'•'}</span><span>${msg}</span>`;
+  container.appendChild(el);
+  setTimeout(()=>{
+    el.style.animation = 'slideOut .2s ease forwards';
+    setTimeout(()=>el.remove(), 200);
+  }, 3500);
+}
+</script>
+</body>
+</html>

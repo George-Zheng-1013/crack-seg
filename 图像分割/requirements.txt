@@ -1,0 +1,22 @@
+# 基础设施外观缺陷智能检测系统依赖
+# 安装命令: pip install -r requirements.txt
+
+# ── 核心推理 ──
+ultralytics>=8.0.0        # YOLOv8 模型框架
+torch>=2.0.0              # PyTorch（CPU 版本）
+torchvision>=0.15.0
+
+# ── 图像处理 ──
+opencv-python>=4.8.0      # 图像读写与可视化
+numpy>=1.24.0
+Pillow>=9.0.0
+
+# ── Web 后端 ──
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9   # 文件上传
+aiofiles>=23.0.0
+
+# ── 报告生成 ──
+reportlab>=4.0.0          # PDF 报告
+openpyxl>=3.1.0           # Excel 报告
