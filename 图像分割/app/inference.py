@@ -11,6 +11,8 @@ from typing import Optional
 from dataclasses import dataclass, field, asdict
 import threading
 
+from app.cause_analyzer import get_cause_analyzer
+
 # ──────────────────────────────────────────────
 # 数据结构
 # ──────────────────────────────────────────────
@@ -31,6 +33,9 @@ class Detection:
     mask_area_px: int   # 掩码面积 (px²)，无掩码时等于 bbox area
     has_mask: bool
     mask_polygon: list  # 轮廓点列表 [[x,y], ...]，用于报告
+    features: dict = field(default_factory=dict)
+    source_indices: list = field(default_factory=list)
+    cause_analysis: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -82,6 +87,207 @@ CLASS_COLORS_BGR = [
     (128, 255, 0  ),   # 9: 黄绿
 ]
 
+MERGE_IOU_THRESHOLD = 0.3
+
+
+# ──────────────────────────────────────────────
+# 后处理与特征提取
+# ──────────────────────────────────────────────
+
+def box_iou(box_a, box_b) -> float:
+    x1 = max(box_a[0], box_b[0])
+    y1 = max(box_a[1], box_b[1])
+    x2 = min(box_a[2], box_b[2])
+    y2 = min(box_a[3], box_b[3])
+
+    inter_w = max(0.0, x2 - x1)
+    inter_h = max(0.0, y2 - y1)
+    inter_area = inter_w * inter_h
+
+    area_a = max(0.0, box_a[2] - box_a[0]) * max(0.0, box_a[3] - box_a[1])
+    area_b = max(0.0, box_b[2] - box_b[0]) * max(0.0, box_b[3] - box_b[1])
+    union = area_a + area_b - inter_area
+
+    return inter_area / union if union > 0 else 0.0
+
+
+def resize_mask_to_image(mask: np.ndarray, image_shape: tuple[int, int]) -> np.ndarray:
+    if mask.shape != image_shape:
+        mask = cv2.resize(
+            mask.astype(np.uint8),
+            (image_shape[1], image_shape[0]),
+            interpolation=cv2.INTER_NEAREST,
+        )
+    return mask.astype(np.uint8)
+
+
+def merge_instances_by_iou(result, iou_threshold: float = MERGE_IOU_THRESHOLD) -> list[dict]:
+    """按 bbox IoU 合并同一裂缝的多个 YOLO 分割实例。"""
+    if result.boxes is None or len(result.boxes) == 0:
+        return []
+
+    boxes = result.boxes.xyxy.cpu().numpy().astype(float)
+    confs = (
+        result.boxes.conf.cpu().numpy().astype(float)
+        if result.boxes.conf is not None
+        else np.ones(len(boxes), dtype=float)
+    )
+    classes = (
+        result.boxes.cls.cpu().numpy().astype(int)
+        if result.boxes.cls is not None
+        else np.zeros(len(boxes), dtype=int)
+    )
+    masks = result.masks.data.cpu().numpy() if result.masks is not None else None
+    if masks is None:
+        return []
+
+    names = result.names if hasattr(result, "names") else {}
+    img_h, img_w = result.orig_img.shape[:2]
+
+    parent = list(range(len(boxes)))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[ry] = rx
+
+    for i in range(len(boxes)):
+        for j in range(i + 1, len(boxes)):
+            if box_iou(boxes[i], boxes[j]) >= iou_threshold:
+                union(i, j)
+
+    groups = {}
+    for i in range(len(boxes)):
+        groups.setdefault(find(i), []).append(i)
+
+    merged_instances = []
+    for idxs in groups.values():
+        best_idx = max(idxs, key=lambda idx: confs[idx])
+        class_id = int(classes[best_idx])
+        class_name = names.get(class_id, str(class_id))
+        merged_box = np.array([np.inf, np.inf, -np.inf, -np.inf], dtype=float)
+        merged_mask = np.zeros((img_h, img_w), dtype=bool)
+        merged_conf = float(np.max(confs[idxs]))
+
+        for idx in idxs:
+            b = boxes[idx]
+            merged_box[0] = min(merged_box[0], b[0])
+            merged_box[1] = min(merged_box[1], b[1])
+            merged_box[2] = max(merged_box[2], b[2])
+            merged_box[3] = max(merged_box[3], b[3])
+            mask_full = resize_mask_to_image(masks[idx], (img_h, img_w)) > 0
+            merged_mask |= mask_full
+
+        merged_instances.append({
+            "bbox": merged_box,
+            "mask": merged_mask.astype(np.uint8),
+            "indices": [int(idx) for idx in idxs],
+            "conf": merged_conf,
+            "class_id": class_id,
+            "class_name": class_name,
+        })
+
+    merged_instances.sort(
+        key=lambda item: (item["class_id"], -item["conf"], item["bbox"][0], item["bbox"][1])
+    )
+
+    class_counts = {}
+    for item in merged_instances:
+        class_counts[item["class_id"]] = class_counts.get(item["class_id"], 0) + 1
+        item["name"] = f'{item["class_name"]}{class_counts[item["class_id"]]}'
+
+    return merged_instances
+
+
+def mask_to_polygon(mask: np.ndarray) -> list:
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return []
+    largest = max(contours, key=cv2.contourArea)
+    epsilon = 0.02 * cv2.arcLength(largest, True)
+    approx = cv2.approxPolyDP(largest, epsilon, True)
+    return approx.reshape(-1, 2).tolist()
+
+
+def extract_crack_features(image: np.ndarray, mask: np.ndarray, bbox: list[int]) -> dict:
+    x1, y1, x2, y2 = bbox
+    bbox_w, bbox_h = max(0, x2 - x1), max(0, y2 - y1)
+    bbox_area = bbox_w * bbox_h
+    mask_uint8 = mask.astype(np.uint8)
+    mask_area = int(mask_uint8.sum())
+    rectangularity = mask_area / bbox_area if bbox_area > 0 else 0
+
+    contours, _ = cv2.findContours(
+        (mask_uint8 * 255).astype(np.uint8),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+
+    slenderness = 0.0
+    major_direction = 0.0
+    boundary_complexity = 0.0
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        rect = cv2.minAreaRect(largest)
+        rw, rh = rect[1]
+        if min(rw, rh) > 0:
+            slenderness = max(rw, rh) / min(rw, rh)
+        major_direction = rect[2]
+        if rect[1][0] < rect[1][1]:
+            major_direction = 90 + major_direction
+        perimeter = cv2.arcLength(largest, True)
+        boundary_complexity = (perimeter ** 2) / mask_area if mask_area > 0 else 0.0
+
+    skeleton_length = 0
+    branch_points = 0
+    end_points = 0
+    try:
+        from skimage.morphology import skeletonize
+
+        skel = skeletonize(mask_uint8 > 0).astype(np.uint8)
+        skeleton_length = int(skel.sum())
+        h, w = skel.shape
+        for row in range(1, h - 1):
+            for col in range(1, w - 1):
+                if skel[row, col] == 1:
+                    neighbors = int(skel[row - 1:row + 2, col - 1:col + 2].sum()) - 1
+                    if neighbors >= 3:
+                        branch_points += 1
+                    elif neighbors == 1:
+                        end_points += 1
+    except Exception:
+        pass
+
+    mask_bool = mask_uint8.astype(bool)
+    pixels = image[mask_bool] if mask_bool.shape == image.shape[:2] else np.empty((0, 3))
+    if len(pixels):
+        color_mean = [round(float(v), 2) for v in pixels.mean(axis=0)]
+        color_std = [round(float(v), 2) for v in pixels.std(axis=0)]
+    else:
+        color_mean = [0.0, 0.0, 0.0]
+        color_std = [0.0, 0.0, 0.0]
+
+    return {
+        "mask_area": mask_area,
+        "rectangularity": round(float(rectangularity), 4),
+        "slenderness": round(float(slenderness), 4),
+        "major_direction": round(float(major_direction), 2),
+        "boundary_complexity": round(float(boundary_complexity), 4),
+        "skeleton_length": skeleton_length,
+        "branch_points": branch_points,
+        "end_points": end_points,
+        "color_mean_bgr": color_mean,
+        "color_std_bgr": color_std,
+    }
+
 
 # ──────────────────────────────────────────────
 # 模型封装
@@ -93,7 +299,7 @@ class DefectDetector:
 
     使用方法::
 
-        detector = DefectDetector("./pt/yolov8n-seg-cracks-joints.pt")
+        detector = DefectDetector("./pt/best.pt")
         result = detector.detect_image(cv2_img)
     """
 
@@ -101,7 +307,7 @@ class DefectDetector:
 
     def __init__(
         self,
-        model_path: str = "./pt/yolov8n-seg-cracks-joints.pt",
+        model_path: str = "./pt/best.pt",
         conf_threshold: float = 0.25,
         iou_threshold: float  = 0.45,
         device: str = "",          # "" = 自动选择 (CUDA > CPU)
@@ -174,7 +380,7 @@ class DefectDetector:
         t1 = time.perf_counter()
         inference_ms = (t1 - t0) * 1000
 
-        detections = self._parse_results(results[0], image.shape)
+        detections = self._parse_results(results[0], image)
 
         return FrameResult(
             frame_index    = frame_index,
@@ -257,65 +463,45 @@ class DefectDetector:
 
     # ── 结果解析 ─────────────────────────────
 
-    def _parse_results(self, result, image_shape: tuple) -> list[Detection]:
-        """将 ultralytics Result 对象解析为 Detection 列表"""
+    def _parse_results(self, result, image: np.ndarray) -> list[Detection]:
+        """将 ultralytics Result 对象解析为合并后的 Detection 列表"""
         detections: list[Detection] = []
-        H, W = image_shape[:2]
+        H, W = image.shape[:2]
 
         if result.boxes is None or len(result.boxes) == 0:
             return detections
 
-        boxes     = result.boxes
-        has_masks = result.masks is not None
+        merged_instances = merge_instances_by_iou(result, MERGE_IOU_THRESHOLD)
+        analyzer = get_cause_analyzer()
 
-        for i in range(len(boxes)):
-            # ── 基础信息 ──
-            cls_id  = int(boxes.cls[i].item())
-            conf    = float(boxes.conf[i].item())
-            cls_name = self.class_names.get(cls_id, f"class_{cls_id}")
+        for i, item in enumerate(merged_instances):
+            cls_id = int(item["class_id"])
+            conf = float(item["conf"])
+            cls_name = str(item["class_name"])
 
-            # ── 边界框（像素） ──
-            x1, y1, x2, y2 = [int(v) for v in boxes.xyxy[i].tolist()]
+            x1, y1, x2, y2 = [int(round(v)) for v in item["bbox"].tolist()]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(W, x2), min(H, y2)
-            bw, bh  = x2 - x1, y2 - y1
-            cx, cy  = x1 + bw // 2, y1 + bh // 2
+            bw, bh = max(0, x2 - x1), max(0, y2 - y1)
+            cx, cy = x1 + bw // 2, y1 + bh // 2
             bbox_area = bw * bh
 
-            # ── 边界框（归一化） ──
             bbox_norm = [
                 round(x1 / W, 4), round(y1 / H, 4),
                 round(x2 / W, 4), round(y2 / H, 4),
             ]
 
-            # ── 掩码信息 ──
-            mask_area  = bbox_area
-            mask_poly  = []
+            mask_bin = resize_mask_to_image(item["mask"], (H, W))
+            mask_area = int(mask_bin.sum())
+            mask_poly = mask_to_polygon(mask_bin)
+            features = extract_crack_features(image, mask_bin, [x1, y1, x2, y2])
+            features["instance_name"] = item.get("name", f"{cls_name}{i + 1}")
 
-            if has_masks and i < len(result.masks.data):
-                mask_np = result.masks.data[i].cpu().numpy()
-
-                # 掩码可能被缩放到模型输入尺寸，需 resize 回原图
-                if mask_np.shape != (H, W):
-                    mask_np = cv2.resize(
-                        mask_np, (W, H), interpolation=cv2.INTER_LINEAR
-                    )
-                mask_bin  = (mask_np > 0.5).astype(np.uint8)
-                mask_area = int(mask_bin.sum())
-
-                # 提取最大轮廓用于报告
-                contours, _ = cv2.findContours(
-                    mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-                if contours:
-                    largest = max(contours, key=cv2.contourArea)
-                    # 简化轮廓点数（最多 20 个点）
-                    epsilon = 0.02 * cv2.arcLength(largest, True)
-                    approx  = cv2.approxPolyDP(largest, epsilon, True)
-                    mask_poly = approx.reshape(-1, 2).tolist()
+            crop = image[y1:y2, x1:x2]
+            cause_analysis = analyzer.analyze_crop(crop)
 
             detections.append(Detection(
-                det_id      = i,
+                det_id      = i + 1,
                 class_id    = cls_id,
                 class_name  = cls_name,
                 confidence  = round(conf, 4),
@@ -326,8 +512,11 @@ class DefectDetector:
                 height      = bh,
                 area_px     = bbox_area,
                 mask_area_px = mask_area,
-                has_mask    = has_masks,
+                has_mask    = True,
                 mask_polygon = mask_poly,
+                features    = features,
+                source_indices = item.get("indices", []),
+                cause_analysis = cause_analysis,
             ))
 
         # 按置信度降序排列

@@ -124,6 +124,9 @@ input[type=range]{width:100%;accent-color:var(--accent);height:4px;margin:4px 0 
 .conf-bar{height:3px;background:var(--bg2);border-radius:2px;overflow:hidden;margin:4px 0}
 .conf-fill{height:100%;border-radius:2px;background:linear-gradient(90deg,var(--green),var(--accent))}
 .det-coords{font-size:11px;color:var(--text3);font-family:monospace}
+.det-extra{font-size:11px;color:var(--text2);line-height:1.55;margin-top:6px}
+.det-extra strong{color:var(--text)}
+.det-muted{color:var(--text3)}
 .det-index{position:absolute;top:8px;right:8px;font-size:10px;color:var(--text3);background:var(--bg2);padding:1px 5px;border-radius:4px}
 
 /* 图表 */
@@ -504,7 +507,25 @@ function handleDrop(e, mode) {
   e.currentTarget.classList.remove('drag-over');
   const files = e.dataTransfer.files;
   if (!files.length) return;
-  if (mode === 'image' && files[0]) previewImageFile(files[0]);
+
+  if (mode === 'image' && files[0]) {
+    setInputFiles('file-image', [files[0]]);
+    previewImageFile(files[0]);
+  }
+  if (mode === 'batch') {
+    setInputFiles('file-batch', Array.from(files));
+    document.getElementById('batch-count').textContent = `已选择 ${files.length} 张图像`;
+  }
+  if (mode === 'video' && files[0]) {
+    setInputFiles('file-video', [files[0]]);
+  }
+}
+
+function setInputFiles(inputId, files) {
+  const input = document.getElementById(inputId);
+  const dt = new DataTransfer();
+  files.forEach(file => dt.items.add(file));
+  input.files = dt.files;
 }
 
 function onFileSelect(e, mode) {
@@ -765,6 +786,16 @@ function renderDetections(detections) {
   list.innerHTML = detections.map((d, i) => {
     const col = colors[d.class_id % colors.length];
     const confPct = (d.confidence * 100).toFixed(1);
+    const f = d.features || {};
+    const ca = d.cause_analysis || {};
+    const top = ca.top_match || {};
+    const causes = ca.possible_causes || [];
+    const advice = ca.inspection_advice || [];
+    const matchText = top.label_cn
+      ? `${top.label_cn} ${(top.score ?? 0).toFixed ? top.score.toFixed(3) : top.score}`
+      : '<span class="det-muted">暂无匹配结果</span>';
+    const causeText = causes.length ? causes.join('、') : '<span class="det-muted">暂无</span>';
+    const adviceText = advice.length ? advice.join('；') : '<span class="det-muted">暂无</span>';
     return `
       <div class="det-item" onclick="highlightDetection(${i})">
         <div class="det-index">#${d.det_id}</div>
@@ -778,11 +809,26 @@ function renderDetections(detections) {
         <div class="conf-bar"><div class="conf-fill" style="width:${confPct}%"></div></div>
         <div class="det-coords">
           bbox [${d.bbox.join(', ')}]<br/>
-          center (${d.center[0]}, ${d.center[1]}) | ${d.width}×${d.height}px
+          center (${d.center[0]}, ${d.center[1]}) | ${d.width}×${d.height}px<br/>
+          mask ${d.mask_area_px}px² | sources ${(d.source_indices || []).join(',') || '-'}
+        </div>
+        <div class="det-extra">
+          <strong>形态</strong> 面积比 ${fmtNum(f.rectangularity)} | 细长度 ${fmtNum(f.slenderness)} | 方向 ${fmtNum(f.major_direction)}°<br/>
+          <strong>骨架</strong> 长度 ${fmtNum(f.skeleton_length, 0)} | 分支 ${fmtNum(f.branch_points, 0)} | 端点 ${fmtNum(f.end_points, 0)}<br/>
+          <strong>视觉特征</strong> ${matchText}<br/>
+          <strong>可能成因</strong> ${causeText}<br/>
+          <strong>排查建议</strong> ${adviceText}
         </div>
       </div>
     `;
   }).join('');
+}
+
+function fmtNum(v, digits=2) {
+  if (v === undefined || v === null || v === '') return '-';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return v;
+  return digits === 0 ? String(Math.round(n)) : n.toFixed(digits);
 }
 
 function renderStats({total, time, conf, frames}) {

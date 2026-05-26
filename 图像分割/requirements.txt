@@ -10,6 +10,8 @@ torchvision>=0.15.0
 opencv-python>=4.8.0      # 图像读写与可视化
 numpy>=1.24.0
 Pillow>=9.0.0
+scikit-image>=0.22.0      # 裂缝骨架与形态特征
+transformers>=4.40.0      # SigLIP/CLIP 成因分析
 
 # ── Web 后端 ──
 fastapi>=0.109.0

@@ -181,3 +181,5 @@ cython_debug/
 .cursorindexingignore
 /dataset
 *.pt
+图像分割/.ultralytics/
+图像分割/Ultralytics/

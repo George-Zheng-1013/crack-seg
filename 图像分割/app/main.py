@@ -27,9 +27,10 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.inference   import DefectDetector, FrameResult
+from app.inference   import DefectDetector, FrameResult, MERGE_IOU_THRESHOLD
 from app.visualizer  import draw_detections, image_to_base64, thumbnail
 from app.reporter    import generate_excel_report, generate_pdf_report
+from app.cause_analyzer import MODEL_NAME as CAUSE_MODEL_NAME
 
 
 # ─────────────────────────────────────────────
@@ -37,7 +38,7 @@ from app.reporter    import generate_excel_report, generate_pdf_report
 # ─────────────────────────────────────────────
 
 BASE_DIR     = Path(__file__).parent.parent
-MODEL_PATH   = BASE_DIR / "pt" / "yolov8n-seg-cracks-joints.pt"
+MODEL_PATH   = BASE_DIR / "pt" / "best.pt"
 STATIC_DIR   = BASE_DIR / "static"
 REPORTS_DIR  = BASE_DIR / "reports"
 UPLOADS_DIR  = BASE_DIR / "uploads"
@@ -159,6 +160,7 @@ async def health():
         "status"      : "ok",
         "model_exists": MODEL_PATH.exists(),
         "model_path"  : str(MODEL_PATH),
+        "cause_model" : CAUSE_MODEL_NAME,
     }
 
 
@@ -171,6 +173,9 @@ async def model_info():
             "class_names" : d.class_names,
             "conf_threshold": d.conf_threshold,
             "iou_threshold" : d.iou_threshold,
+            "merge_iou_threshold": MERGE_IOU_THRESHOLD,
+            "cause_model": CAUSE_MODEL_NAME,
+            "cause_analysis_enabled": True,
             "is_loaded"   : d.is_loaded,
         }
     except Exception as e:

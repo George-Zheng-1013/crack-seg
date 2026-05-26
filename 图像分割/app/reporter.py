@@ -11,6 +11,19 @@ from typing import Optional
 from app.inference import FrameResult, Detection
 
 
+def _feature(det: Detection, key: str, default=""):
+    return (det.features or {}).get(key, default)
+
+
+def _top_match(det: Detection) -> dict:
+    return (det.cause_analysis or {}).get("top_match", {}) or {}
+
+
+def _cause_text(det: Detection, key: str, sep: str = "、") -> str:
+    values = (det.cause_analysis or {}).get(key, [])
+    return sep.join(values) if values else ""
+
+
 # ──────────────────────────────────────────────
 # Excel 报告
 # ──────────────────────────────────────────────
@@ -158,6 +171,17 @@ def generate_excel_report(
         ("高度(px)",   10),
         ("边界框面积", 14),
         ("掩码面积",   12),
+        ("面积比",     10),
+        ("细长度",     10),
+        ("主方向(°)",  12),
+        ("边界复杂度", 12),
+        ("骨架长度",   12),
+        ("分支数",     10),
+        ("端点数",     10),
+        ("视觉特征",   22),
+        ("匹配得分",   10),
+        ("可能成因",   32),
+        ("排查建议",   40),
         ("推理时间(ms)", 14),
     ]
 
@@ -171,6 +195,7 @@ def generate_excel_report(
     global_idx = 1
     for frame_result in results:
         for det in frame_result.detections:
+            top = _top_match(det)
             bg = COLOR_ALT_ROW if det_row % 2 == 0 else "FFFFFF"
             row_data = [
                 global_idx,
@@ -188,6 +213,17 @@ def generate_excel_report(
                 det.height,
                 det.area_px,
                 det.mask_area_px,
+                _feature(det, "rectangularity"),
+                _feature(det, "slenderness"),
+                _feature(det, "major_direction"),
+                _feature(det, "boundary_complexity"),
+                _feature(det, "skeleton_length"),
+                _feature(det, "branch_points"),
+                _feature(det, "end_points"),
+                top.get("label_cn", ""),
+                top.get("score", ""),
+                _cause_text(det, "possible_causes"),
+                _cause_text(det, "inspection_advice", sep="；"),
                 round(frame_result.inference_time_ms, 2),
             ]
             for col_i, val in enumerate(row_data, start=1):
@@ -345,29 +381,39 @@ def generate_pdf_report(
     story.append(Paragraph("2. 缺陷明细列表", cn_style(14, bold=True, color=colors.HexColor("#2E75B6"))))
     story.append(Spacer(1, 4 * mm))
 
-    col_w = [W_pt * x for x in [0.05, 0.10, 0.12, 0.10, 0.30, 0.10, 0.12, 0.11]]
-    det_headers = ["#", "帧编号", "类别", "置信度", "边界框 [x1,y1,x2,y2]", "宽(px)", "高(px)", "掩码面积"]
+    col_w = [W_pt * x for x in [0.05, 0.09, 0.11, 0.08, 0.11, 0.13, 0.19, 0.24]]
+    det_headers = ["#", "帧编号", "类别", "置信度", "掩码面积", "视觉特征", "可能成因", "排查建议"]
     det_data = [det_headers]
 
     for r in results:
         for d in r.detections:
+            top = _top_match(d)
             det_data.append([
                 str(d.det_id),
                 str(r.frame_index),
                 d.class_name,
                 f"{d.confidence:.3f}",
-                f"[{d.bbox[0]},{d.bbox[1]},{d.bbox[2]},{d.bbox[3]}]",
-                str(d.width),
-                str(d.height),
                 str(d.mask_area_px),
+                f"{top.get('label_cn', '')} {top.get('score', '')}",
+                _cause_text(d, "possible_causes"),
+                _cause_text(d, "inspection_advice", sep="；"),
             ])
+
+    det_data = [
+        [
+            Paragraph(str(cell), cn_style(8 if row_idx == 0 else 7, align="center"))
+            for cell in row
+        ]
+        for row_idx, row in enumerate(det_data)
+    ]
 
     det_ts = TableStyle([
         ("BACKGROUND",    (0, 0), (-1, 0),  colors.HexColor("#2E75B6")),
         ("TEXTCOLOR",     (0, 0), (-1, 0),  colors.white),
         ("FONTNAME",      (0, 0), (-1, -1), FONT_CN),
-        ("FONTSIZE",      (0, 0), (-1, -1), 8),
+        ("FONTSIZE",      (0, 0), (-1, -1), 7),
         ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
         ("ROWBACKGROUNDS",(0, 1), (-1, -1), [colors.white, colors.HexColor("#EBF3FB")]),
         ("GRID",          (0, 0), (-1, -1), 0.4, colors.HexColor("#CCCCCC")),
         ("TOPPADDING",    (0, 0), (-1, -1), 3),
@@ -377,10 +423,36 @@ def generate_pdf_report(
     t2.setStyle(det_ts)
     story.append(t2)
 
+    if all_dets:
+        story.append(Spacer(1, 5 * mm))
+        story.append(Paragraph("3. 裂缝形态特征", cn_style(14, bold=True, color=colors.HexColor("#2E75B6"))))
+        story.append(Spacer(1, 4 * mm))
+
+        feat_data = [["#", "面积比", "细长度", "主方向", "边界复杂度", "骨架长度", "分支数", "端点数"]]
+        for r in results:
+            for d in r.detections:
+                feat_data.append([
+                    str(d.det_id),
+                    str(_feature(d, "rectangularity")),
+                    str(_feature(d, "slenderness")),
+                    str(_feature(d, "major_direction")),
+                    str(_feature(d, "boundary_complexity")),
+                    str(_feature(d, "skeleton_length")),
+                    str(_feature(d, "branch_points")),
+                    str(_feature(d, "end_points")),
+                ])
+        feat_data = [
+            [Paragraph(str(cell), cn_style(7, align="center")) for cell in row]
+            for row in feat_data
+        ]
+        feat_table = Table(feat_data, colWidths=[W_pt / 8] * 8, repeatRows=1)
+        feat_table.setStyle(det_ts)
+        story.append(feat_table)
+
     # ─────────── 标注图像 ───────────
     if annotated_images:
         story.append(PageBreak())
-        story.append(Paragraph("3. 检测标注图像", cn_style(14, bold=True, color=colors.HexColor("#2E75B6"))))
+        story.append(Paragraph("4. 检测标注图像", cn_style(14, bold=True, color=colors.HexColor("#2E75B6"))))
         story.append(Spacer(1, 4 * mm))
 
         tmp_files = []
