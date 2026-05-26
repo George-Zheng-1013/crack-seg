@@ -9,31 +9,31 @@ from typing import Optional
 
 from app.inference import Detection, FrameResult, CLASS_COLORS_BGR
 
-
 # ──────────────────────────────────────────────
 # 配置
 # ──────────────────────────────────────────────
 
-MASK_ALPHA     = 0.40   # 掩码叠加透明度
-FONT           = cv2.FONT_HERSHEY_SIMPLEX
-FONT_SCALE     = 0.55
-FONT_THICKNESS = 1
-BOX_THICKNESS  = 2
-LABEL_PADDING  = 4      # 标签内边距 px
+MASK_ALPHA = 0.40  # 掩码叠加透明度
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT_SCALE = 2
+FONT_THICKNESS = 4
+BOX_THICKNESS = 2
+LABEL_PADDING = 4  # 标签内边距 px
 
 
 # ──────────────────────────────────────────────
 # 主可视化函数
 # ──────────────────────────────────────────────
 
+
 def draw_detections(
     image: np.ndarray,
     result: FrameResult,
-    draw_masks: bool   = True,
-    draw_boxes: bool   = True,
-    draw_labels: bool  = True,
-    draw_index: bool   = True,
-    mask_alpha: float  = MASK_ALPHA,
+    draw_masks: bool = True,
+    draw_boxes: bool = True,
+    draw_labels: bool = True,
+    draw_index: bool = True,
+    mask_alpha: float = MASK_ALPHA,
 ) -> np.ndarray:
     """
     在图像上绘制检测结果，返回新的标注图像（不修改原图）。
@@ -70,7 +70,7 @@ def draw_detections(
             color = _get_color(det.class_id)
             x1, y1 = det.bbox[0], det.bbox[1]
             idx_str = f"#{det.det_id} " if draw_index else ""
-            label   = f"{idx_str}{det.class_name} {det.confidence:.2f}"
+            label = f"{idx_str}{det.class_name} {det.confidence:.2f}"
             _draw_label(vis, label, x1, y1, color)
 
     # ── 4. 绘制信息角标 ────────────────────────
@@ -85,7 +85,8 @@ def draw_detections_minimal(
 ) -> np.ndarray:
     """轻量版：只绘制掩码+框，无标签（用于视频帧缩略图）"""
     return draw_detections(
-        image, result,
+        image,
+        result,
         draw_masks=True,
         draw_boxes=True,
         draw_labels=False,
@@ -96,6 +97,7 @@ def draw_detections_minimal(
 # ──────────────────────────────────────────────
 # 内部工具函数
 # ──────────────────────────────────────────────
+
 
 def _get_color(class_id: int) -> tuple[int, int, int]:
     return CLASS_COLORS_BGR[class_id % len(CLASS_COLORS_BGR)]
@@ -147,14 +149,23 @@ def _draw_label(
     # 半透明背景
     sub = vis[bg_y1:bg_y2, bg_x1:bg_x2]
     if sub.size > 0:
-        bg  = np.full_like(sub, color)
+        bg = np.full_like(sub, color)
         blended = cv2.addWeighted(bg, 0.75, sub, 0.25, 0)
         vis[bg_y1:bg_y2, bg_x1:bg_x2] = blended
 
     # 文字（白色）
     tx = x + pad
     ty = max(th, y - pad - baseline)
-    cv2.putText(vis, text, (tx, ty), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
+    cv2.putText(
+        vis,
+        text,
+        (tx, ty),
+        FONT,
+        FONT_SCALE,
+        (255, 255, 255),
+        FONT_THICKNESS,
+        cv2.LINE_AA,
+    )
 
 
 def _draw_summary_overlay(vis: np.ndarray, result: FrameResult):
@@ -169,17 +180,22 @@ def _draw_summary_overlay(vis: np.ndarray, result: FrameResult):
 
     y_offset = 10
     for line in lines:
-        (tw, th), _ = cv2.getTextSize(line, FONT, 0.5, 1)
+        (tw, th), _ = cv2.getTextSize(line, FONT, 4, 1)
         # 半透明黑色背景条
-        cv2.rectangle(vis, (5, y_offset - 2), (tw + 14, y_offset + th + 4),
-                      (0, 0, 0), -1)
-        cv2.addWeighted(
-            vis[y_offset - 2: y_offset + th + 4, 5: tw + 14], 0.5,
-            np.zeros((th + 6, tw + 9, 3), dtype=np.uint8), 0.5,
-            0, vis[y_offset - 2: y_offset + th + 4, 5: tw + 14]
+        cv2.rectangle(
+            vis, (5, y_offset - 2), (tw + 14, y_offset + th + 4), (0, 0, 0), -1
         )
-        cv2.putText(vis, line, (10, y_offset + th),
-                    FONT, 0.5, (0, 255, 200), 1, cv2.LINE_AA)
+        cv2.addWeighted(
+            vis[y_offset - 2 : y_offset + th + 4, 5 : tw + 14],
+            0.5,
+            np.zeros((th + 6, tw + 9, 3), dtype=np.uint8),
+            0.5,
+            0,
+            vis[y_offset - 2 : y_offset + th + 4, 5 : tw + 14],
+        )
+        cv2.putText(
+            vis, line, (10, y_offset + th), FONT, 2, (255, 255, 255), 1, cv2.LINE_AA
+        )
         y_offset += th + 8
 
 
@@ -189,9 +205,14 @@ def _draw_no_detection_hint(vis: np.ndarray) -> np.ndarray:
     text = "No defects detected"
     (tw, th), _ = cv2.getTextSize(text, FONT, 0.8, 2)
     cv2.putText(
-        vis, text,
+        vis,
+        text,
         ((W - tw) // 2, (H + th) // 2),
-        FONT, 0.8, (0, 200, 100), 2, cv2.LINE_AA,
+        FONT,
+        0.8,
+        (0, 200, 100),
+        2,
+        cv2.LINE_AA,
     )
     return vis
 
@@ -199,6 +220,7 @@ def _draw_no_detection_hint(vis: np.ndarray) -> np.ndarray:
 # ──────────────────────────────────────────────
 # 视频帧 GIF / 缩略图工具
 # ──────────────────────────────────────────────
+
 
 def encode_image_to_jpeg_bytes(image: np.ndarray, quality: int = 85) -> bytes:
     """将 BGR numpy array 编码为 JPEG bytes"""
@@ -219,6 +241,7 @@ def encode_image_to_png_bytes(image: np.ndarray) -> bytes:
 def image_to_base64(image: np.ndarray, fmt: str = "jpeg") -> str:
     """将图像编码为 base64 字符串（用于 API 响应 / HTML 展示）"""
     import base64
+
     if fmt == "jpeg":
         data = encode_image_to_jpeg_bytes(image)
         mime = "image/jpeg"
