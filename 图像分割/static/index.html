@@ -1086,6 +1086,8 @@
         let currentSession = null;
         let currentResult = null;   // 当前帧结果（单图或选中帧）
         let allResults = [];     // 所有帧结果
+        let batchThumbnails = [];
+        let videoTimeline = [];
         let originalImage = null;   // 当前显示的原始图 (data-url)
         let annotatedImage = null;   // 标注图 (data-url)
         let showingOverlay = true;
@@ -1451,17 +1453,18 @@
         function handleBatchResult(data) {
             currentSession = data.session_id;
             allResults = data.results;
+            batchThumbnails = data.thumbnails_b64 || [];
             currentResult = data.results[0] || null;
 
             // 显示第一张
-            if (data.thumbnails_b64.length) {
-                annotatedImage = data.thumbnails_b64[0];
+            if (batchThumbnails.length) {
+                annotatedImage = batchThumbnails[0];
                 showImage(annotatedImage);
             }
 
             // 批量缩略图条
             const inner = document.getElementById('batch-thumbs-inner');
-            inner.innerHTML = data.thumbnails_b64.map((b64, i) => `
+            inner.innerHTML = batchThumbnails.map((b64, i) => `
     <img src="${b64}" style="height:80px;border-radius:6px;cursor:pointer;border:2px solid ${i === 0 ? 'var(--accent)' : 'var(--border)'}"
          onclick="selectBatchFrame(${i},'${data.session_id}')" title="图像 ${i + 1}: ${data.results[i]?.total_defects || 0} 处缺陷"/>
   `).join('');
@@ -1482,24 +1485,28 @@
         function handleVideoResult(data) {
             currentSession = data.session_id;
             allResults = data.results;
+            videoTimeline = data.timeline || [];
             currentResult = data.results[0] || null;
 
-            // 清空画布，等用户点时间线
-            const container = document.getElementById('canvas-container');
-            container.innerHTML = `
+            if (data.annotated_video_url) {
+                showVideo(data.annotated_video_url);
+            } else {
+                const container = document.getElementById('canvas-container');
+                container.innerHTML = `
     <div class="canvas-placeholder">
       <div class="big-icon">🎬</div>
-      <p>视频处理完成 ${data.total_frames} 帧</p>
-      <p style="font-size:12px;margin-top:6px">点击下方时间线查看各帧</p>
+      <p>视频处理完成 ${data.total_frames || 0} 帧</p>
     </div>
     <div class="loading-overlay" id="loading-overlay" style="display:none">
       <div class="spinner"></div>
       <div class="loading-text" id="loading-text">正在推理...</div>
     </div>
   `;
+            }
 
             // 时间线
-            renderTimeline(data.results);
+            renderTimeline(videoTimeline);
+            if (currentResult) renderDetections(currentResult.detections);
 
             renderStats({
                 total: data.summary.total_defects,
@@ -1515,6 +1522,10 @@
         function selectBatchFrame(idx) {
             if (idx >= allResults.length) return;
             currentResult = allResults[idx];
+            if (batchThumbnails[idx]) {
+                annotatedImage = batchThumbnails[idx];
+                showImage(annotatedImage);
+            }
             // 高亮缩略图
             document.querySelectorAll('#batch-thumbs-inner img').forEach((el, i) => {
                 el.style.borderColor = i === idx ? 'var(--accent)' : 'var(--border)';
@@ -1529,6 +1540,18 @@
             const container = document.getElementById('canvas-container');
             container.innerHTML = `
     <img id="result-canvas" src="${src}" style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;transform-origin:center;transition:transform .2s"/>
+    <div class="loading-overlay" id="loading-overlay" style="display:none">
+      <div class="spinner"></div>
+      <div class="loading-text" id="loading-text">正在推理...</div>
+    </div>
+  `;
+            currentZoom = 1.0;
+        }
+
+        function showVideo(src) {
+            const container = document.getElementById('canvas-container');
+            container.innerHTML = `
+    <video id="result-video" src="${src}" controls style="max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;background:#000"></video>
     <div class="loading-overlay" id="loading-overlay" style="display:none">
       <div class="spinner"></div>
       <div class="loading-text" id="loading-text">正在推理...</div>
@@ -1575,6 +1598,12 @@
                     : isCausePending
                         ? '<span class="det-muted">成因分析中...</span>'
                         : '<span class="det-muted">暂无</span>';
+                const trackMeta = d.track_id !== undefined && d.track_id !== null
+                    ? `<div class="det-coords">track T${d.track_id} | first ${fmtNum(d.first_time)}s | last ${fmtNum(d.last_time)}s | frames ${d.frame_count || 0}</div>`
+                    : '';
+                const cropHtml = d.best_crop_url
+                    ? `<img src="${escapeHtml(d.best_crop_url)}" style="width:100%;max-height:140px;object-fit:contain;border-radius:6px;margin:8px 0;background:#0b1020;border:1px solid var(--border)" />`
+                    : '';
                 return `
       <div class="det-item" onclick="highlightDetection(${i})">
         <div class="det-index">#${d.det_id}</div>
@@ -1591,6 +1620,8 @@
           center (${d.center[0]}, ${d.center[1]}) | ${d.width}×${d.height}px<br/>
           mask ${d.mask_area_px}px² | sources ${(d.source_indices || []).join(',') || '-'}
         </div>
+        ${trackMeta}
+        ${cropHtml}
         <div class="det-extra">
           <strong>形态</strong> 面积比 ${fmtNum(f.rectangularity)} | 细长度 ${fmtNum(f.slenderness)} | 方向 ${fmtNum(f.major_direction)}°<br/>
           <strong>骨架</strong> 长度 ${fmtNum(f.skeleton_length, 0)} | 分支 ${fmtNum(f.branch_points, 0)} | 端点 ${fmtNum(f.end_points, 0)}<br/>
@@ -1671,18 +1702,24 @@
             document.getElementById('tl-end').textContent = `${maxTs.toFixed(1)}s`;
 
             track.innerHTML = results.map((r, i) => `
-    <div class="timeline-segment ${r.total_defects > 0 ? 'has-defect' : ''}"
+    <div class="timeline-segment ${(r.total_defects || r.detections || 0) > 0 ? 'has-defect' : ''}"
          style="flex:1"
-         title="帧${r.frame_index} ${r.timestamp_sec.toFixed(2)}s | 缺陷:${r.total_defects}"
+         title="帧${r.frame_index} ${Number(r.timestamp_sec || 0).toFixed(2)}s | 缺陷:${r.total_defects || r.detections || 0}"
          onclick="selectVideoFrame(${i})">
     </div>
   `).join('');
         }
 
         function selectVideoFrame(idx) {
-            if (idx >= allResults.length) return;
-            currentResult = allResults[idx];
-            renderDetections(currentResult.detections);
+            if (!videoTimeline.length || idx >= videoTimeline.length) return;
+            const item = videoTimeline[idx];
+            const ids = new Set((item.track_ids || []).map(v => Number(v)));
+            const aggregate = allResults[0] || { detections: [] };
+            currentResult = aggregate;
+            const visibleDets = ids.size
+                ? aggregate.detections.filter(d => ids.has(Number(d.track_id)))
+                : [];
+            renderDetections(visibleDets);
             // 高亮时间线段
             document.querySelectorAll('.timeline-segment').forEach((el, i) => {
                 el.style.opacity = i === idx ? '1' : '';

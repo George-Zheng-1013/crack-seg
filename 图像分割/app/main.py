@@ -11,6 +11,7 @@ import json
 import asyncio
 import threading
 import base64
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -42,9 +43,11 @@ MODEL_PATH   = BASE_DIR / "pt" / "best.pt"
 STATIC_DIR   = BASE_DIR / "static"
 REPORTS_DIR  = BASE_DIR / "reports"
 UPLOADS_DIR  = BASE_DIR / "uploads"
+VIDEO_ASSETS_DIR = UPLOADS_DIR / "video_assets"
 
 REPORTS_DIR.mkdir(exist_ok=True)
 UPLOADS_DIR.mkdir(exist_ok=True)
+VIDEO_ASSETS_DIR.mkdir(exist_ok=True)
 
 
 # ─────────────────────────────────────────────
@@ -111,14 +114,18 @@ def _make_session(
     results: list[FrameResult],
     source_name: str,
     annotated_images: list,
+    session_id: Optional[str] = None,
+    extra: Optional[dict] = None,
 ) -> str:
-    sid = str(uuid.uuid4())
+    sid = session_id or str(uuid.uuid4())
     SESSIONS[sid] = {
         "results"          : results,
         "source_name"      : source_name,
         "annotated_images" : annotated_images,
         "created_at"       : time.time(),
     }
+    if extra:
+        SESSIONS[sid].update(extra)
     # 自动清理超过 1 小时的会话
     _cleanup_old_sessions()
     return sid
@@ -129,6 +136,9 @@ def _cleanup_old_sessions(max_age_sec: int = 3600):
     expired = [sid for sid, s in SESSIONS.items()
                if now - s["created_at"] > max_age_sec]
     for sid in expired:
+        asset_dir = SESSIONS.get(sid, {}).get("asset_dir")
+        if asset_dir:
+            shutil.rmtree(asset_dir, ignore_errors=True)
         del SESSIONS[sid]
 
 
@@ -312,9 +322,13 @@ async def detect_video(
     if max_frames > 500:
         max_frames = 500
 
+    session_id = str(uuid.uuid4())
+    asset_dir = VIDEO_ASSETS_DIR / session_id
+    asset_url_prefix = f"/api/video-assets/{session_id}"
+
     # 保存临时文件
     suffix = Path(file.filename or "video.mp4").suffix
-    tmp_path = UPLOADS_DIR / f"{uuid.uuid4()}{suffix}"
+    tmp_path = UPLOADS_DIR / f"{session_id}{suffix}"
 
     try:
         content = await file.read()
@@ -323,40 +337,46 @@ async def detect_video(
         detector = get_detector()
         detector.update_thresholds(conf, iou)
 
-        results = detector.detect_video(
+        video_result = detector.detect_video_tracking(
             str(tmp_path),
-            conf            = conf,
-            iou             = iou,
-            sample_interval = sample_interval,
-            max_frames      = max_frames,
+            output_dir       = asset_dir,
+            asset_url_prefix = asset_url_prefix,
+            conf             = conf,
+            iou              = iou,
+            sample_interval  = sample_interval,
+            max_frames       = max_frames,
+            tracker          = "botsort.yaml",
         )
     except Exception as e:
+        shutil.rmtree(asset_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"视频处理失败: {e}")
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    # 为有缺陷的帧生成标注图（最多 20 帧）
-    ann_results   = [r for r in results if r.total_defects > 0][:20]
-    session_id = _make_session(results, file.filename or "video", [])
-
-    total_defs = sum(r.total_defects for r in results)
-    by_class: dict[str, int] = {}
-    for r in results:
-        for cls, cnt in r.by_class.items():
-            by_class[cls] = by_class.get(cls, 0) + cnt
+    results = video_result["results"]
+    timeline = video_result["timeline"]
+    summary = video_result["summary"]
+    _make_session(
+        results,
+        file.filename or "video",
+        [],
+        session_id=session_id,
+        extra={
+            "asset_dir": str(asset_dir),
+            "annotated_video_path": video_result.get("annotated_video_path", ""),
+            "annotated_video_url": video_result.get("annotated_video_url", ""),
+            "timeline": timeline,
+            "video_summary": summary,
+        },
+    )
 
     return JSONResponse({
-        "session_id"  : session_id,
-        "total_frames": len(results),
-        "results"     : [r.to_dict() for r in results],
-        "summary": {
-            "total_defects"   : total_defs,
-            "defective_frames": len([r for r in results if r.total_defects > 0]),
-            "by_class"        : by_class,
-            "avg_inference_ms": round(
-                sum(r.inference_time_ms for r in results) / max(len(results), 1), 2
-            ),
-        },
+        "session_id"          : session_id,
+        "total_frames"        : summary.get("processed_frames", 0),
+        "annotated_video_url" : video_result.get("annotated_video_url", ""),
+        "timeline"            : timeline,
+        "results"             : [r.to_dict() for r in results],
+        "summary"             : summary,
     })
 
 
@@ -486,6 +506,23 @@ async def download_pdf(session_id: str, include_images: bool = True):
     )
 
 
+@app.get("/api/video-assets/{session_id}/{asset_path:path}")
+async def get_video_asset(session_id: str, asset_path: str):
+    """读取视频检测生成的标注视频或最佳实例 crop。"""
+    session = _get_session(session_id)
+    asset_dir = session.get("asset_dir")
+    if not asset_dir:
+        raise HTTPException(status_code=404, detail="视频资产不存在")
+
+    base = Path(asset_dir).resolve()
+    target = (base / asset_path).resolve()
+    if base not in target.parents and target != base:
+        raise HTTPException(status_code=400, detail="非法资产路径")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="资产文件不存在")
+    return FileResponse(str(target))
+
+
 # ─────────────────────────────────────────────
 # 路由：会话管理
 # ─────────────────────────────────────────────
@@ -509,6 +546,9 @@ async def list_sessions():
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
     if session_id in SESSIONS:
+        asset_dir = SESSIONS[session_id].get("asset_dir")
+        if asset_dir:
+            shutil.rmtree(asset_dir, ignore_errors=True)
         del SESSIONS[session_id]
     return {"status": "ok"}
 
