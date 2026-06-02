@@ -119,6 +119,27 @@ def _save_best_crop(
     return str(crop_path)
 
 
+def _overlay_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    color: tuple[int, int, int],
+    alpha: float = 0.35,
+) -> np.ndarray:
+    if mask is None or mask.size == 0:
+        return image
+
+    h, w = image.shape[:2]
+    if mask.shape[:2] != (h, w):
+        mask = cv2.resize(mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST)
+    mask_bool = mask > 0
+    if not np.any(mask_bool):
+        return image
+
+    overlay = image.copy()
+    overlay[mask_bool] = color
+    return cv2.addWeighted(overlay, alpha, image, 1.0 - alpha, 0.0)
+
+
 def _to_jsonable(value):
     if isinstance(value, dict):
         return {str(key): _to_jsonable(item) for key, item in value.items()}
@@ -267,6 +288,10 @@ def main() -> None:
                     c = np.random.RandomState(int(track_id) & 0xFFFFFFFF).randint(0, 255, size=3)
                     color = (int(c[0]), int(c[1]), int(c[2]))
                     track_colors[int(track_id)] = color
+
+                if masks is not None and idx < len(masks):
+                    vis = _overlay_mask(vis, masks[idx], color, alpha=0.35)
+
                 x1, y1, x2, y2 = bbox
                 cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
                 label = f"{class_name}:{int(track_id)}"
