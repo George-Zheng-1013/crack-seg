@@ -7,6 +7,7 @@ import time
 import cv2
 import numpy as np
 import math
+import subprocess
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field, asdict
@@ -584,7 +585,12 @@ class DefectDetector:
         max_frames: int = 500,
         tracker: str = "botsort.yaml",
         progress_callback=None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> dict:
+        def check_cancelled():
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("video detection cancelled")
+
         output_dir = Path(output_dir)
         crops_dir = output_dir / "crops"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -602,11 +608,12 @@ class DefectDetector:
         max_frames = max(1, int(max_frames or 1))
         sample_count = min(max_frames, (total_frames + sample_interval - 1) // sample_interval) if total_frames else max_frames
 
+        raw_annotated_path = output_dir / "annotated_raw.mp4"
         annotated_path = output_dir / "annotated.mp4"
         writer = None
         if frame_w > 0 and frame_h > 0:
             writer = cv2.VideoWriter(
-                str(annotated_path),
+                str(raw_annotated_path),
                 cv2.VideoWriter_fourcc(*"mp4v"),
                 float(fps),
                 (frame_w, frame_h),
@@ -623,6 +630,7 @@ class DefectDetector:
 
         try:
             while cap.isOpened():
+                check_cancelled()
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -630,7 +638,7 @@ class DefectDetector:
                 if writer is None:
                     h, w = frame.shape[:2]
                     writer = cv2.VideoWriter(
-                        str(annotated_path),
+                        str(raw_annotated_path),
                         cv2.VideoWriter_fourcc(*"mp4v"),
                         float(fps),
                         (w, h),
@@ -641,6 +649,7 @@ class DefectDetector:
                 frame_detections = 0
 
                 if sampled < max_frames and frame_idx % sample_interval == 0:
+                    check_cancelled()
                     sampled += 1
                     track_result = self.model.track(
                         source=frame,
@@ -770,6 +779,10 @@ class DefectDetector:
             if writer is not None:
                 writer.release()
 
+        check_cancelled()
+        self._transcode_video_for_browser(raw_annotated_path, annotated_path)
+        raw_annotated_path.unlink(missing_ok=True)
+
         detections: list[Detection] = []
         analysis_items = []
         analysis_detections = []
@@ -822,6 +835,7 @@ class DefectDetector:
                 det.cause_analysis = {"status": "error", "error": "best crop is empty"}
             detections.append(det)
 
+        check_cancelled()
         if analysis_items:
             analyses = get_cause_analyzer().analyze_batch(analysis_items)
             for det, analysis in zip(analysis_detections, analyses):
@@ -858,6 +872,45 @@ class DefectDetector:
                 "tracker": tracker,
             },
         }
+
+    def _transcode_video_for_browser(self, src_path: Path, dst_path: Path):
+        """Convert OpenCV output to H.264/yuv420p MP4 for browser playback."""
+        if not src_path.exists() or src_path.stat().st_size == 0:
+            raise RuntimeError("annotated video was not generated")
+
+        tmp_dst = dst_path.with_suffix(".h264.tmp.mp4")
+        tmp_dst.unlink(missing_ok=True)
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", str(src_path),
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-an",
+            str(tmp_dst),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("ffmpeg is not available; cannot create browser-playable MP4") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("ffmpeg transcode timed out") from exc
+
+        if proc.returncode != 0 or not tmp_dst.exists() or tmp_dst.stat().st_size == 0:
+            tmp_dst.unlink(missing_ok=True)
+            err = (proc.stderr or proc.stdout or "").strip().splitlines()
+            detail = err[-1] if err else "unknown ffmpeg error"
+            raise RuntimeError(f"ffmpeg transcode failed: {detail}")
+
+        dst_path.unlink(missing_ok=True)
+        tmp_dst.replace(dst_path)
 
     # ── 结果解析 ─────────────────────────────
 

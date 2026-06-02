@@ -311,6 +311,17 @@
             color: var(--accent)
         }
 
+        .btn-danger {
+            background: rgba(239, 68, 68, .14);
+            color: #fecaca;
+            border: 1px solid rgba(239, 68, 68, .45)
+        }
+
+        .btn-danger:hover {
+            border-color: var(--red);
+            color: #fff
+        }
+
         .btn-sm {
             padding: 5px 10px;
             font-size: 12px
@@ -950,6 +961,9 @@
                 <button class="btn btn-primary btn-full" id="detect-btn" onclick="startDetection()">
                     <span>🔍</span> 开始检测
                 </button>
+                <button class="btn btn-danger btn-full" id="abort-btn" onclick="abortCurrentRun()" style="display:none;margin-top:8px">
+                    <span>⏹</span> 中断当前任务
+                </button>
             </div>
 
             <!-- 历史记录 -->
@@ -1095,6 +1109,11 @@
         let currentZoom = 1.0;
         let history_records = [];
         let sampleFilenames = [];
+        let isRunning = false;
+        let activeRunId = null;
+        let activeAbortController = null;
+        let activeWebSocket = null;
+        let videoPreviewImage = null;
 
         const API = '';   // 同源
         const DEFAULT_CONF = 0.25;
@@ -1152,6 +1171,10 @@
            标签切换
         ══════════════════════════════════════════════════ */
         function switchTab(tab) {
+            if (isRunning) {
+                toast('正在处理中，请先中断当前任务', 'info');
+                return;
+            }
             currentTab = tab;
             document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
             ['image', 'batch', 'video', 'dataset'].forEach(t => {
@@ -1172,6 +1195,10 @@
         function handleDrop(e, mode) {
             e.preventDefault();
             e.currentTarget.classList.remove('drag-over');
+            if (isRunning) {
+                toast('正在处理中，请先中断当前任务', 'info');
+                return;
+            }
             const files = e.dataTransfer.files;
             if (!files.length) return;
 
@@ -1185,6 +1212,7 @@
             }
             if (mode === 'video' && files[0]) {
                 setInputFiles('file-video', [files[0]]);
+                previewVideoFile(files[0]);
             }
         }
 
@@ -1196,9 +1224,15 @@
         }
 
         function onFileSelect(e, mode) {
+            if (isRunning) {
+                toast('正在处理中，请先中断当前任务', 'info');
+                e.target.value = '';
+                return;
+            }
             const files = e.target.files;
             if (!files.length) return;
             if (mode === 'image') previewImageFile(files[0]);
+            if (mode === 'video') previewVideoFile(files[0]);
             if (mode === 'batch') document.getElementById('batch-count').textContent = `已选择 ${files.length} 张图像`;
         }
 
@@ -1213,10 +1247,54 @@
             reader.readAsDataURL(file);
         }
 
+        function previewVideoFile(file) {
+            videoPreviewImage = null;
+            const url = URL.createObjectURL(file);
+            const video = document.createElement('video');
+            video.preload = 'metadata';
+            video.muted = true;
+            video.src = url;
+            let done = false;
+
+            const capture = () => {
+                if (done || !video.videoWidth) return;
+                done = true;
+                try {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+                    videoPreviewImage = canvas.toDataURL('image/jpeg', 1.0);
+                    originalImage = videoPreviewImage;
+                    annotatedImage = videoPreviewImage;
+                    showImage(videoPreviewImage);
+                    document.getElementById('canvas-info').textContent = `${file.name} | ${canvas.width}x${canvas.height} 首帧预览`;
+                    document.getElementById('timeline').classList.remove('visible');
+                    document.getElementById('batch-thumbs').style.display = 'none';
+                } finally {
+                    URL.revokeObjectURL(url);
+                }
+            };
+
+            video.onloadeddata = () => {
+                try { video.currentTime = 0; } catch (e) { capture(); }
+            };
+            video.onseeked = capture;
+            video.onerror = () => {
+                URL.revokeObjectURL(url);
+                toast('无法读取视频首帧', 'error');
+            };
+            setTimeout(capture, 600);
+        }
+
         /* ══════════════════════════════════════════════════
            检测入口
         ══════════════════════════════════════════════════ */
         async function startDetection() {
+            if (isRunning) {
+                toast('正在处理中，请先中断当前任务', 'info');
+                return;
+            }
             const conf = DEFAULT_CONF;
             const iou = DEFAULT_IOU;
 
@@ -1231,11 +1309,17 @@
             if (!fileInput.files.length) { toast('请先选择图像文件', 'error'); return; }
             const file = fileInput.files[0];
 
+            const runId = beginRun('图像分割中...');
             setLoading(true, '图像分割中...');
             try {
-                await detectImageWebSocket(file, conf, iou);
+                await detectImageWebSocket(file, conf, iou, runId);
+                endRun();
                 return;
             } catch (e) {
+                if (e.name === 'AbortError') {
+                    endRun();
+                    return;
+                }
                 console.warn('WebSocket 分阶段检测失败，回退到 HTTP:', e);
             }
 
@@ -1244,23 +1328,26 @@
             fd.append('file', file);
             fd.append('conf', conf);
             fd.append('iou', iou);
+            fd.append('run_id', runId);
 
             try {
-                const r = await fetch(`${API}/api/detect/image`, { method: 'POST', body: fd });
+                const r = await fetch(`${API}/api/detect/image`, { method: 'POST', body: fd, signal: activeAbortController?.signal });
                 if (!r.ok) { const e = await r.json(); throw new Error(e.detail || '推理失败'); }
                 const data = await r.json();
                 handleSingleResult(data);
                 toast(`检测完成：发现 ${data.summary.total_defects} 处缺陷`, 'success');
             } catch (e) {
+                if (e.name === 'AbortError') return;
                 toast(`错误: ${e.message}`, 'error');
             } finally {
-                setLoading(false);
+                endRun();
             }
         }
 
-        function detectImageWebSocket(file, conf, iou) {
+        function detectImageWebSocket(file, conf, iou, runId) {
             return new Promise((resolve, reject) => {
                 const ws = new WebSocket(makeWsUrl('/ws/detect'));
+                activeWebSocket = ws;
                 let settled = false;
                 let gotSegmentation = false;
 
@@ -1271,6 +1358,7 @@
                             image,
                             conf,
                             iou,
+                            run_id: runId,
                             source_name: file.name,
                         }));
                     } catch (e) {
@@ -1317,9 +1405,17 @@
                 };
 
                 ws.onerror = () => {
+                    if (activeAbortController?.signal.aborted) {
+                        reject(new DOMException('Aborted', 'AbortError'));
+                        return;
+                    }
                     if (!settled && !gotSegmentation) reject(new Error('WebSocket 连接失败'));
                 };
                 ws.onclose = () => {
+                    if (activeAbortController?.signal.aborted) {
+                        reject(new DOMException('Aborted', 'AbortError'));
+                        return;
+                    }
                     if (!settled && !gotSegmentation) reject(new Error('WebSocket 已关闭'));
                     else if (!settled && gotSegmentation) {
                         settled = true;
@@ -1347,22 +1443,25 @@
             const fileInput = document.getElementById('file-batch');
             if (!fileInput.files.length) { toast('请先选择图像文件', 'error'); return; }
 
+            const runId = beginRun(`批量推理 ${fileInput.files.length} 张图像...`);
             setLoading(true, `批量推理 ${fileInput.files.length} 张图像...`);
             const fd = new FormData();
             for (const f of fileInput.files) fd.append('files', f);
             fd.append('conf', conf);
             fd.append('iou', iou);
+            fd.append('run_id', runId);
 
             try {
-                const r = await fetch(`${API}/api/detect/batch`, { method: 'POST', body: fd });
+                const r = await fetch(`${API}/api/detect/batch`, { method: 'POST', body: fd, signal: activeAbortController?.signal });
                 if (!r.ok) { const e = await r.json(); throw new Error(e.detail || '批量推理失败'); }
                 const data = await r.json();
                 handleBatchResult(data);
                 toast(`批量完成：${data.processed} 张，共 ${data.summary.total_defects} 处缺陷`, 'success');
             } catch (e) {
+                if (e.name === 'AbortError') return;
                 toast(`错误: ${e.message}`, 'error');
             } finally {
-                setLoading(false);
+                endRun();
             }
         }
 
@@ -1373,6 +1472,7 @@
             const interval = parseInt(document.getElementById('interval-slider').value);
             const maxFrames = parseInt(document.getElementById('maxframes-slider').value);
 
+            const runId = beginRun('视频分析中，请稍候...');
             setLoading(true, '视频分析中，请稍候...');
             showProgress(0);
 
@@ -1382,25 +1482,32 @@
             fd.append('iou', iou);
             fd.append('sample_interval', interval);
             fd.append('max_frames', maxFrames);
+            fd.append('run_id', runId);
 
             try {
-                const r = await fetch(`${API}/api/detect/video`, { method: 'POST', body: fd });
+                const r = await fetch(`${API}/api/detect/video`, { method: 'POST', body: fd, signal: activeAbortController?.signal });
                 if (!r.ok) { const e = await r.json(); throw new Error(e.detail || '视频处理失败'); }
                 const data = await r.json();
                 handleVideoResult(data);
                 toast(`视频分析完成：${data.total_frames} 帧，${data.summary.defective_frames} 帧含缺陷`, 'success');
             } catch (e) {
+                if (e.name === 'AbortError') return;
                 toast(`错误: ${e.message}`, 'error');
             } finally {
-                setLoading(false);
+                endRun();
                 hideProgress();
             }
         }
 
         async function detectDatasetSample(filename) {
+            if (isRunning) {
+                toast('正在处理中，请先中断当前任务', 'info');
+                return;
+            }
             const conf = DEFAULT_CONF;
             const iou = DEFAULT_IOU;
 
+            beginRun(`检测 ${filename}...`);
             setLoading(true, `检测 ${filename}...`);
             const fd = new FormData();
             fd.append('conf', conf);
@@ -1417,7 +1524,7 @@
             } catch (e) {
                 toast(`错误: ${e.message}`, 'error');
             } finally {
-                setLoading(false);
+                endRun();
             }
         }
 
@@ -1441,7 +1548,17 @@
             renderClassChart(data.summary.by_class);
             enableExport(analysisDone);
             if (analysisDone || !history_records.length || history_records[0].thumb !== annotatedImage) {
-                addHistory({ name: data.source_name || 'image', thumb: annotatedImage, total: data.summary.total_defects });
+                addHistory({
+                    type: currentTab === 'dataset' ? 'dataset' : 'image',
+                    name: data.source_name || 'image',
+                    session_id: currentSession,
+                    thumb: annotatedImage,
+                    image_b64: annotatedImage,
+                    result: data.result,
+                    results: [data.result],
+                    summary: data.summary,
+                    total: data.summary.total_defects,
+                });
             }
             document.getElementById('canvas-info').textContent = analysisDone
                 ? (data.summary.image_size || '')
@@ -1480,6 +1597,17 @@
             renderClassChart(data.summary.by_class);
             enableExport(true);
             document.getElementById('timeline').classList.remove('visible');
+            addHistory({
+                type: 'batch',
+                name: `批量 ${data.processed || allResults.length} 张图像`,
+                session_id: currentSession,
+                thumb: batchThumbnails[0] || '',
+                thumbnails_b64: batchThumbnails,
+                results: allResults,
+                summary: data.summary,
+                processed: data.processed,
+                total: data.summary.total_defects,
+            });
         }
 
         function handleVideoResult(data) {
@@ -1517,6 +1645,18 @@
             renderClassChart(data.summary.by_class);
             enableExport(true);
             document.getElementById('batch-thumbs').style.display = 'none';
+            addHistory({
+                type: 'video',
+                name: '视频检测',
+                session_id: currentSession,
+                thumb: videoPreviewImage || '',
+                annotated_video_url: data.annotated_video_url || '',
+                timeline: videoTimeline,
+                results: allResults,
+                summary: data.summary,
+                total_frames: data.total_frames,
+                total: data.summary.total_defects,
+            });
         }
 
         function selectBatchFrame(idx) {
@@ -1735,6 +1875,13 @@
         }
 
         function addHistory(item) {
+            if (!item.thumb) item.thumb = item.image_b64 || videoPreviewImage || '';
+            const existing = item.session_id
+                ? history_records.findIndex(h => h.session_id === item.session_id)
+                : -1;
+            if (existing >= 0) {
+                history_records.splice(existing, 1);
+            }
             history_records.unshift(item);
             if (history_records.length > 8) history_records.pop();
             renderHistory();
@@ -1759,8 +1906,63 @@
 
         function reloadHistory(i) {
             const h = history_records[i];
-            showImage(h.thumb);
-            annotatedImage = h.thumb;
+            if (!h || isRunning) {
+                if (isRunning) toast('正在处理中，请先中断当前任务', 'info');
+                return;
+            }
+            currentSession = h.session_id || null;
+            allResults = h.results || (h.result ? [h.result] : []);
+            currentResult = h.result || allResults[0] || null;
+            batchThumbnails = h.thumbnails_b64 || [];
+            videoTimeline = h.timeline || [];
+            annotatedImage = h.image_b64 || h.thumb || '';
+
+            document.getElementById('batch-thumbs').style.display = 'none';
+            document.getElementById('timeline').classList.remove('visible');
+
+            if (h.type === 'video') {
+                if (h.annotated_video_url) showVideo(h.annotated_video_url);
+                else if (h.thumb) showImage(h.thumb);
+                renderTimeline(videoTimeline);
+                if (currentResult) renderDetections(currentResult.detections);
+                renderStats({
+                    total: h.summary?.total_defects || h.total || 0,
+                    time: h.summary?.avg_inference_ms || h.summary?.inference_time_ms || '-',
+                    conf: allResults.flatMap(r => r.detections || []).reduce((mx, d) => Math.max(mx, d.confidence || 0), 0),
+                    frames: h.total_frames || h.summary?.processed_frames || 1,
+                });
+                renderClassChart(h.summary?.by_class || {});
+            } else if (h.type === 'batch') {
+                if (batchThumbnails.length) {
+                    annotatedImage = batchThumbnails[0];
+                    showImage(annotatedImage);
+                    const inner = document.getElementById('batch-thumbs-inner');
+                    inner.innerHTML = batchThumbnails.map((b64, idx) => `
+    <img src="${b64}" style="height:80px;border-radius:6px;cursor:pointer;border:2px solid ${idx === 0 ? 'var(--accent)' : 'var(--border)'}"
+         onclick="selectBatchFrame(${idx})" title="图像 ${idx + 1}"/>
+  `).join('');
+                    document.getElementById('batch-thumbs').style.display = 'block';
+                }
+                if (currentResult) renderDetections(currentResult.detections);
+                renderStats({
+                    total: h.summary?.total_defects || h.total || 0,
+                    time: h.summary?.avg_inference_ms || '-',
+                    conf: allResults.flatMap(r => r.detections || []).reduce((mx, d) => Math.max(mx, d.confidence || 0), 0),
+                    frames: h.processed || allResults.length,
+                });
+                renderClassChart(h.summary?.by_class || {});
+            } else {
+                if (annotatedImage) showImage(annotatedImage);
+                if (currentResult) renderDetections(currentResult.detections);
+                renderStats({
+                    total: h.summary?.total_defects || h.total || 0,
+                    time: h.summary?.inference_time_ms || '-',
+                    conf: currentResult?.detections?.length ? Math.max(...currentResult.detections.map(d => d.confidence || 0)) : 0,
+                    frames: 1,
+                });
+                renderClassChart(h.summary?.by_class || {});
+            }
+            enableExport(!!currentSession);
         }
 
         /* ══════════════════════════════════════════════════
@@ -1796,6 +1998,7 @@
            报告导出
         ══════════════════════════════════════════════════ */
         async function exportReport(type) {
+            if (isRunning) { toast('正在处理中，请先中断或等待完成', 'info'); return; }
             if (!currentSession) { toast('请先完成检测', 'error'); return; }
             const url = type === 'excel'
                 ? `${API}/api/report/${currentSession}/excel`
@@ -1819,6 +2022,7 @@
         }
 
         function exportJSON() {
+            if (isRunning) { toast('正在处理中，请先中断或等待完成', 'info'); return; }
             if (!allResults.length) { toast('暂无数据', 'error'); return; }
             const data = {
                 session_id: currentSession,
@@ -1838,9 +2042,57 @@
         /* ══════════════════════════════════════════════════
            工具函数
         ══════════════════════════════════════════════════ */
+        function createRunId() {
+            if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+            return `run_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        }
+
+        function beginRun(text = '正在处理...') {
+            isRunning = true;
+            activeRunId = createRunId();
+            activeAbortController = new AbortController();
+            document.querySelectorAll('.tab').forEach(el => el.disabled = true);
+            document.querySelectorAll('input[type=file]').forEach(el => el.disabled = true);
+            document.querySelectorAll('.sample-thumb').forEach(el => el.style.pointerEvents = 'none');
+            document.getElementById('abort-btn').style.display = 'flex';
+            enableExport(false);
+            setLoading(true, text);
+            return activeRunId;
+        }
+
+        function endRun() {
+            isRunning = false;
+            activeRunId = null;
+            activeAbortController = null;
+            activeWebSocket = null;
+            document.querySelectorAll('.tab').forEach(el => el.disabled = false);
+            document.querySelectorAll('input[type=file]').forEach(el => el.disabled = false);
+            document.querySelectorAll('.sample-thumb').forEach(el => el.style.pointerEvents = '');
+            document.getElementById('abort-btn').style.display = 'none';
+            setLoading(false);
+        }
+
+        async function abortCurrentRun() {
+            if (!isRunning) return;
+            const rid = activeRunId;
+            if (activeAbortController) activeAbortController.abort();
+            if (activeWebSocket) {
+                try { activeWebSocket.close(); } catch (e) { }
+            }
+            if (rid) {
+                try {
+                    await fetch(`${API}/api/runs/${rid}/cancel`, { method: 'POST' });
+                } catch (e) { }
+            }
+            currentSession = null;
+            hideProgress();
+            endRun();
+            toast('已请求中断当前任务，并清理半成品缓存', 'info');
+        }
+
         function setLoading(show, text = '正在处理...') {
             const btn = document.getElementById('detect-btn');
-            btn.disabled = show;
+            btn.disabled = show || isRunning;
             btn.textContent = show ? '⌛ 处理中...' : '🔍 开始检测';
 
             const overlay = document.getElementById('loading-overlay');

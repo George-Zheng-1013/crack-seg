@@ -37,6 +37,14 @@ def _pdf_advice_id(seq: int, frame_result: FrameResult, det: Detection) -> str:
     return f"{seq}:{frame_result.frame_index}:{det.det_id}"
 
 
+def _display_frame_index(frame_result: FrameResult, det: Detection) -> int:
+    if det.best_frame_index is not None:
+        return int(det.best_frame_index)
+    if det.first_frame is not None:
+        return int(det.first_frame)
+    return int(frame_result.frame_index)
+
+
 def _load_deepseek_config() -> dict:
     try:
         config = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
@@ -138,6 +146,94 @@ def _generate_pdf_api_advice(results: list[FrameResult]) -> dict[str, str]:
         return advice_by_id
     except Exception:
         return {}
+
+
+def _scene_payload(results: list[FrameResult], video_summary: Optional[dict]) -> dict:
+    items = []
+    seq = 1
+    for frame_result in results:
+        for det in frame_result.detections:
+            top = _top_match(det)
+            items.append({
+                "id": str(seq),
+                "track_id": det.track_id,
+                "类别": det.class_name,
+                "置信度": round(det.confidence, 4),
+                "代表帧": _display_frame_index(frame_result, det),
+                "首次出现时间": det.first_time,
+                "末次出现时间": det.last_time,
+                "出现帧数": det.frame_count,
+                "掩码面积": det.mask_area_px,
+                "视觉特征": _top_feature_text(det),
+                "匹配得分": top.get("score", ""),
+                "可能成因": _cause_text(det, "possible_causes"),
+                "排查建议": _cause_text(det, "inspection_advice", sep="；"),
+                "面积比": _feature(det, "rectangularity"),
+                "细长度": _feature(det, "slenderness"),
+                "主方向": _feature(det, "major_direction"),
+                "边界复杂度": _feature(det, "boundary_complexity"),
+                "骨架长度": _feature(det, "skeleton_length"),
+                "分支数": _feature(det, "branch_points"),
+                "端点数": _feature(det, "end_points"),
+            })
+            seq += 1
+    return {
+        "video_summary": video_summary or {},
+        "items": items,
+    }
+
+
+def _fallback_scene_analysis(results: list[FrameResult], video_summary: Optional[dict]) -> str:
+    all_dets = [d for r in results for d in r.detections]
+    if not all_dets:
+        return "该视频场景未检测到明确缺陷实例，建议结合原始视频画面、拍摄范围和现场巡检记录继续复核。"
+    by_class: dict[str, int] = {}
+    for det in all_dets:
+        by_class[det.class_name] = by_class.get(det.class_name, 0) + 1
+    class_text = "、".join(f"{k}{v}处" for k, v in sorted(by_class.items(), key=lambda x: -x[1]))
+    sampled = (video_summary or {}).get("sampled_frames", "")
+    return (
+        f"该视频场景共汇总到 {len(all_dets)} 个唯一缺陷实例，类别分布为 {class_text}。"
+        f"建议结合视频连续画面、代表帧 crop、缺陷位置关系和施工/渗排水记录进行复核；"
+        f"本结论基于 {sampled or '若干'} 个采样跟踪帧形成，作为现场排查的辅助依据。"
+    )
+
+
+def _generate_video_scene_analysis(results: list[FrameResult], video_summary: Optional[dict]) -> str:
+    if not any(d.track_id is not None for r in results for d in r.detections):
+        return ""
+
+    config = _load_deepseek_config()
+    payload = _scene_payload(results, video_summary)
+    if not config or not payload["items"]:
+        return _fallback_scene_analysis(results, video_summary)
+
+    system_prompt = """
+你是混凝土和基础设施表观缺陷排查助手。用户会提供同一视频场景中跟踪得到的唯一缺陷实例、类别分布、时间范围、形态指标、视觉特征匹配、可能成因和原始建议。
+请输出 JSON：{"scene_analysis":"..."}。
+要求：1. 使用中文；2. 写成一段综合分析，约 120-220 字；3. 强调这是同一视频场景下的辅助研判，不写成确定诊断；4. 综合类别、数量、时间范围、形态指标和可能成因，不只复述单条建议；5. 给出现场复核重点。
+"""
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(
+            api_key=config["api_key"],
+            base_url=config["base_url"],
+            timeout=float(config["timeout_sec"]),
+        )
+        response = client.chat.completions.create(
+            model=config["model"],
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+            ],
+            response_format={"type": "json_object"},
+        )
+        parsed = json.loads(response.choices[0].message.content or "{}")
+        text = str(parsed.get("scene_analysis", "")).strip()
+        return text or _fallback_scene_analysis(results, video_summary)
+    except Exception:
+        return _fallback_scene_analysis(results, video_summary)
 
 
 # ──────────────────────────────────────────────
@@ -375,6 +471,8 @@ def generate_pdf_report(
     results: list[FrameResult],
     source_name: str = "unknown",
     annotated_images: Optional[list] = None,   # list of BGR numpy arrays
+    instance_image_paths: Optional[list[dict]] = None,
+    video_summary: Optional[dict] = None,
     output_path: Optional[str] = None,
     max_images: int = 10,
 ) -> bytes:
@@ -457,6 +555,13 @@ def generate_pdf_report(
     story.append(Spacer(1, 8 * mm))
     story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#2E75B6")))
     story.append(Spacer(1, 6 * mm))
+
+    scene_analysis = _generate_video_scene_analysis(results, video_summary)
+    if scene_analysis:
+        story.append(Paragraph("视频场景综合分析", cn_style(12, bold=True, color=colors.HexColor("#2E75B6"))))
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph(scene_analysis, cn_style(9)))
+        story.append(Spacer(1, 6 * mm))
     story.append(Paragraph(f"检测来源：{source_name}", cn_style(12, align="center")))
     story.append(Paragraph(f"生成时间：{now_str}", cn_style(12, align="center")))
     story.append(PageBreak())
@@ -513,7 +618,7 @@ def generate_pdf_report(
             )
             det_data.append([
                 str(d.det_id),
-                str(r.frame_index),
+                str(_display_frame_index(r, d)),
                 d.class_name,
                 f"{d.confidence:.3f}",
                 str(d.mask_area_px),
@@ -574,6 +679,33 @@ def generate_pdf_report(
         story.append(feat_table)
 
     # ─────────── 标注图像 ───────────
+    if instance_image_paths:
+        story.append(PageBreak())
+        story.append(Paragraph("4. 视频唯一实例图像", cn_style(14, bold=True, color=colors.HexColor("#2E75B6"))))
+        story.append(Spacer(1, 4 * mm))
+        for item in instance_image_paths[:max_images]:
+            img_path = Path(str(item.get("path", "")))
+            if not img_path.exists() or not img_path.is_file():
+                continue
+            try:
+                import cv2 as _cv2
+                img_bgr = _cv2.imread(str(img_path))
+                if img_bgr is None:
+                    continue
+                H_img, W_img = img_bgr.shape[:2]
+                disp_w = min(W_pt, W_img * 0.75)
+                disp_h = disp_w * H_img / max(W_img, 1)
+                story.append(RLImage(str(img_path), width=disp_w, height=disp_h))
+                caption = (
+                    f"实例 {item.get('det_id', '')} | track T{item.get('track_id', '-')} | "
+                    f"{item.get('class_name', '')} | 代表帧 {item.get('frame_index', '-')} | "
+                    f"{item.get('first_time', '-')}s - {item.get('last_time', '-')}s"
+                )
+                story.append(Paragraph(caption, cn_style(8, align="center")))
+                story.append(Spacer(1, 4 * mm))
+            except Exception:
+                continue
+
     if annotated_images:
         story.append(PageBreak())
         story.append(Paragraph("4. 检测标注图像", cn_style(14, bold=True, color=colors.HexColor("#2E75B6"))))
