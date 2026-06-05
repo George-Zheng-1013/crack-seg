@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 34px "Microsoft YaHei", "SimHei", Arial, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 18px "Microsoft YaHei", "SimHei", Arial, sans-serif; fill: #475569; }
+      .lane-title { font: 700 22px "Microsoft YaHei", "SimHei", Arial, sans-serif; fill: #0f172a; }
+      .box-title { font: 700 18px "Microsoft YaHei", "SimHei", Arial, sans-serif; fill: #0f172a; }
+      .box-text { font: 400 14px "Microsoft YaHei", "SimHei", Arial, sans-serif; fill: #334155; }
+      .small { font: 400 13px "Microsoft YaHei", "SimHei", Arial, sans-serif; fill: #475569; }
+      .tag { font: 700 13px "Microsoft YaHei", "SimHei", Arial, sans-serif; fill: #ffffff; }
+      .lane { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 18; }
+      .train { fill: #eff6ff; stroke: #60a5fa; stroke-width: 2; rx: 12; }
+      .app { fill: #f0fdf4; stroke: #4ade80; stroke-width: 2; rx: 12; }
+      .engine { fill: #fff7ed; stroke: #fb923c; stroke-width: 2; rx: 12; }
+      .analysis { fill: #f5f3ff; stroke: #a78bfa; stroke-width: 2; rx: 12; }
+      .output { fill: #fefce8; stroke: #eab308; stroke-width: 2; rx: 12; }
+      .data { fill: #ecfeff; stroke: #22d3ee; stroke-width: 2; rx: 12; }
+      .line { stroke: #334155; stroke-width: 2.2; fill: none; marker-end: url(#arrow); }
+      .line-blue { stroke: #2563eb; stroke-width: 2.2; fill: none; marker-end: url(#arrowBlue); stroke-dasharray: 7 5; }
+      .note { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 10; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1600" height="1080"/>
+  <text class="title" x="800" y="52" text-anchor="middle">基础设施外观缺陷智能检测系统架构流程图</text>
+  <text class="subtitle" x="800" y="84" text-anchor="middle">YOLOv26-Seg 分割检测 + SigLIP 成因分析 + FastAPI Web 应用</text>
+
+  <rect class="lane" x="40" y="120" width="1520" height="275"/>
+  <text class="lane-title" x="70" y="158">一、离线数据工程与模型训练链路</text>
+  <rect class="train" x="80" y="190" width="190" height="110"/>
+  <text class="box-title" x="175" y="222" text-anchor="middle">三类数据源</text>
+  <text class="box-text" x="175" y="250" text-anchor="middle">crack-seg / CUBIT-Det</text>
+  <text class="box-text" x="175" y="273" text-anchor="middle">GYU-DET</text>
+
+  <rect class="train" x="310" y="190" width="190" height="110"/>
+  <text class="box-title" x="405" y="222" text-anchor="middle">标注统一</text>
+  <text class="box-text" x="405" y="250" text-anchor="middle">YOLO Seg 格式</text>
+  <text class="box-text" x="405" y="273" text-anchor="middle">class + polygon</text>
+
+  <rect class="train" x="540" y="190" width="190" height="110"/>
+  <text class="box-title" x="635" y="222" text-anchor="middle">SAM 生成 mask</text>
+  <text class="box-text" x="635" y="250" text-anchor="middle">检测框标注</text>
+  <text class="box-text" x="635" y="273" text-anchor="middle">转像素级分割</text>
+
+  <rect class="train" x="770" y="190" width="210" height="110"/>
+  <text class="box-title" x="875" y="222" text-anchor="middle">类别映射与合并</text>
+  <text class="box-text" x="875" y="250" text-anchor="middle">6 类缺陷</text>
+  <text class="box-text" x="875" y="273" text-anchor="middle">crack-multi-seg</text>
+
+  <rect class="train" x="1020" y="190" width="190" height="110"/>
+  <text class="box-title" x="1115" y="222" text-anchor="middle">数据增强</text>
+  <text class="box-text" x="1115" y="250" text-anchor="middle">Mosaic / Flip / HSV</text>
+  <text class="box-text" x="1115" y="273" text-anchor="middle">Scale / Erasing</text>
+
+  <rect class="train" x="1250" y="180" width="230" height="130"/>
+  <text class="box-title" x="1365" y="214" text-anchor="middle">YOLOv26-Seg 训练</text>
+  <text class="box-text" x="1365" y="242" text-anchor="middle">yolo26m-seg.pt</text>
+  <text class="box-text" x="1365" y="265" text-anchor="middle">加权分割损失</text>
+  <text class="box-text" x="1365" y="288" text-anchor="middle">输出 pt/best.pt</text>
+
+  <path class="line" d="M270 245 H310"/>
+  <path class="line" d="M500 245 H540"/>
+  <path class="line" d="M730 245 H770"/>
+  <path class="line" d="M980 245 H1020"/>
+  <path class="line" d="M1210 245 H1250"/>
+
+  <rect class="lane" x="40" y="430" width="1520" height="515"/>
+  <text class="lane-title" x="70" y="468">二、在线检测应用系统链路</text>
+
+  <rect class="app" x="80" y="505" width="220" height="135"/>
+  <text class="box-title" x="190" y="538" text-anchor="middle">前端页面</text>
+  <text class="box-text" x="190" y="566" text-anchor="middle">static/index.html</text>
+  <text class="box-text" x="190" y="589" text-anchor="middle">图片 / 批量 / 视频</text>
+  <text class="box-text" x="190" y="612" text-anchor="middle">实时检测与报告下载</text>
+
+  <rect class="app" x="345" y="505" width="230" height="135"/>
+  <text class="box-title" x="460" y="538" text-anchor="middle">FastAPI 后端</text>
+  <text class="box-text" x="460" y="566" text-anchor="middle">app/main.py</text>
+  <text class="box-text" x="460" y="589" text-anchor="middle">HTTP API / WebSocket</text>
+  <text class="box-text" x="460" y="612" text-anchor="middle">上传、会话、任务管理</text>
+
+  <rect class="engine" x="620" y="495" width="250" height="155"/>
+  <text class="box-title" x="745" y="528" text-anchor="middle">DefectDetector</text>
+  <text class="box-text" x="745" y="556" text-anchor="middle">app/inference.py</text>
+  <text class="box-text" x="745" y="579" text-anchor="middle">加载 pt/best.pt</text>
+  <text class="box-text" x="745" y="602" text-anchor="middle">YOLOv26-Seg 推理</text>
+  <text class="box-text" x="745" y="625" text-anchor="middle">bbox + mask + class + conf</text>
+
+  <rect class="engine" x="920" y="495" width="245" height="155"/>
+  <text class="box-title" x="1042" y="528" text-anchor="middle">后处理与特征</text>
+  <text class="box-text" x="1042" y="556" text-anchor="middle">Union-Find 实例合并</text>
+  <text class="box-text" x="1042" y="579" text-anchor="middle">IoU 阈值 0.3</text>
+  <text class="box-text" x="1042" y="602" text-anchor="middle">面积、方向、细长度</text>
+  <text class="box-text" x="1042" y="625" text-anchor="middle">骨架长度、边界复杂度</text>
+
+  <rect class="analysis" x="1215" y="485" width="265" height="175"/>
+  <text class="box-title" x="1348" y="518" text-anchor="middle">成因分析</text>
+  <text class="box-text" x="1348" y="546" text-anchor="middle">CauseAnalyzer</text>
+  <text class="box-text" x="1348" y="569" text-anchor="middle">SigLIP 子进程 worker</text>
+  <text class="box-text" x="1348" y="592" text-anchor="middle">base64 crop + Prompt 匹配</text>
+  <text class="box-text" x="1348" y="615" text-anchor="middle">cause_prompts.json</text>
+  <text class="box-text" x="1348" y="638" text-anchor="middle">6 类 28 条成因建议</text>
+
+  <path class="line" d="M300 572 H345"/>
+  <path class="line" d="M575 572 H620"/>
+  <path class="line" d="M870 572 H920"/>
+  <path class="line" d="M1165 572 H1215"/>
+  <path class="line-blue" d="M1365 310 V430"/>
+  <text class="small" x="1388" y="370">最优权重加载</text>
+
+  <rect class="data" x="620" y="705" width="250" height="105"/>
+  <text class="box-title" x="745" y="736" text-anchor="middle">视频检测分支</text>
+  <text class="box-text" x="745" y="764" text-anchor="middle">逐帧推理 + BoT-SORT</text>
+  <text class="box-text" x="745" y="787" text-anchor="middle">track_id / 最佳 crop / 时间线</text>
+
+  <rect class="output" x="920" y="705" width="245" height="105"/>
+  <text class="box-title" x="1042" y="736" text-anchor="middle">可视化标注</text>
+  <text class="box-text" x="1042" y="764" text-anchor="middle">app/visualizer.py</text>
+  <text class="box-text" x="1042" y="787" text-anchor="middle">mask / bbox / label 叠加</text>
+
+  <rect class="output" x="1215" y="705" width="265" height="105"/>
+  <text class="box-title" x="1348" y="736" text-anchor="middle">报告导出</text>
+  <text class="box-text" x="1348" y="764" text-anchor="middle">app/reporter.py</text>
+  <text class="box-text" x="1348" y="787" text-anchor="middle">Excel / PDF 缺陷报告</text>
+
+  <rect class="output" x="560" y="855" width="520" height="65"/>
+  <text class="box-title" x="820" y="882" text-anchor="middle">最终输出</text>
+  <text class="box-text" x="820" y="907" text-anchor="middle">标注图片、标注视频、缺陷类型与位置、置信度、几何特征、成因分析与排查建议</text>
+
+  <path class="line" d="M745 650 V705"/>
+  <path class="line" d="M870 758 H920"/>
+  <path class="line" d="M1042 650 V705"/>
+  <path class="line" d="M1348 660 V705"/>
+  <path class="line" d="M1042 810 V855"/>
+  <path class="line" d="M1348 810 V888 H1080"/>
+  <path class="line-blue" d="M560 888 H190 V640"/>
+  <text class="small" x="235" y="875">结果回显与下载</text>
+
+  <rect class="note" x="80" y="705" width="455" height="160"/>
+  <text class="box-title" x="308" y="736" text-anchor="middle">实时 WebSocket 两阶段返回</text>
+  <rect x="115" y="760" width="170" height="36" rx="18" fill="#2563eb"/>
+  <text class="tag" x="200" y="783" text-anchor="middle">segmentation_done</text>
+  <text class="box-text" x="315" y="784">先返回 YOLO 分割结果与标注图</text>
+  <rect x="115" y="810" width="170" height="36" rx="18" fill="#7c3aed"/>
+  <text class="tag" x="200" y="833" text-anchor="middle">analysis_done</text>
+  <text class="box-text" x="315" y="834">再补充 SigLIP 成因分析结果</text>
+  <path class="line-blue" d="M460 640 V705"/>
+
+  <rect class="note" x="1120" y="855" width="360" height="65"/>
+  <text class="box-title" x="1300" y="883" text-anchor="middle">支持 API</text>
+  <text class="box-text" x="1300" y="907" text-anchor="middle">/api/detect/image、/batch、/video、/ws/detect、/api/report</text>
+
+  <text class="small" x="800" y="1015" text-anchor="middle">注：离线训练链路产出最优权重，在线应用链路负责上传、推理、成因分析、可视化和报告导出。</text>
+</svg>
