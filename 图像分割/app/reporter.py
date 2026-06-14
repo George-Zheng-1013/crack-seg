@@ -547,6 +547,13 @@ def generate_pdf_report(
     )
     story = []
     W_pt  = A4[0] - 40 * mm   # 可用宽度
+    H_pt  = A4[1] - 40 * mm   # 可用高度
+
+    def fit_image_size(img_w: int, img_h: int, max_w: float, max_h: float) -> tuple[float, float]:
+        if img_w <= 0 or img_h <= 0:
+            return max_w, max_h
+        scale = min(max_w / img_w, max_h / img_h, 1.0)
+        return img_w * scale, img_h * scale
 
     # ─────────── 封面 ───────────
     story.append(Spacer(1, 30 * mm))
@@ -681,7 +688,7 @@ def generate_pdf_report(
     # ─────────── 标注图像 ───────────
     if instance_image_paths:
         story.append(PageBreak())
-        story.append(Paragraph("4. 视频唯一实例图像", cn_style(14, bold=True, color=colors.HexColor("#2E75B6"))))
+        story.append(Paragraph("4. 缺陷实例局部图像", cn_style(14, bold=True, color=colors.HexColor("#2E75B6"))))
         story.append(Spacer(1, 4 * mm))
         for item in instance_image_paths[:max_images]:
             img_path = Path(str(item.get("path", "")))
@@ -693,14 +700,19 @@ def generate_pdf_report(
                 if img_bgr is None:
                     continue
                 H_img, W_img = img_bgr.shape[:2]
-                disp_w = min(W_pt, W_img * 0.75)
-                disp_h = disp_w * H_img / max(W_img, 1)
+                disp_w, disp_h = fit_image_size(W_img, H_img, W_pt, H_pt * 0.72)
                 story.append(RLImage(str(img_path), width=disp_w, height=disp_h))
-                caption = (
-                    f"实例 {item.get('det_id', '')} | track T{item.get('track_id', '-')} | "
-                    f"{item.get('class_name', '')} | 代表帧 {item.get('frame_index', '-')} | "
-                    f"{item.get('first_time', '-')}s - {item.get('last_time', '-')}s"
-                )
+                if item.get("track_id") is not None:
+                    caption = (
+                        f"实例 {item.get('det_id', '')} | track T{item.get('track_id', '-')} | "
+                        f"{item.get('class_name', '')} | 代表帧 {item.get('frame_index', '-')} | "
+                        f"{item.get('first_time', '-')}s - {item.get('last_time', '-')}s"
+                    )
+                else:
+                    caption = (
+                        f"实例 {item.get('det_id', '')} | {item.get('class_name', '')} | "
+                        f"图像序号 {item.get('frame_index', '-')}"
+                    )
                 story.append(Paragraph(caption, cn_style(8, align="center")))
                 story.append(Spacer(1, 4 * mm))
             except Exception:
@@ -717,11 +729,8 @@ def generate_pdf_report(
                 zip(annotated_images[:max_images], results[:max_images])
             ):
                 import cv2 as _cv2
-                # 缩放到 A4 可用宽度
                 H_img, W_img = img_bgr.shape[:2]
-                scale = min(1.0, W_pt / (W_img * 0.75))   # pt to px rough conversion
-                disp_w = W_pt
-                disp_h = disp_w * H_img / W_img
+                disp_w, disp_h = fit_image_size(W_img, H_img, W_pt, H_pt * 0.72)
 
                 tmpf = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
                 tmp_files.append(tmpf.name)

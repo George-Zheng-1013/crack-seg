@@ -1116,8 +1116,8 @@
         let videoPreviewImage = null;
 
         const API = '';   // 同源
-        const DEFAULT_CONF = 0.25;
-        const DEFAULT_IOU = 0.45;
+        const DEFAULT_CONF = 0.1;
+        const DEFAULT_IOU = 0.25;
 
         /* ══════════════════════════════════════════════════
            初始化
@@ -2014,7 +2014,7 @@
                 a.href = objUrl;
                 a.download = `defect_report_${Date.now()}.${type === 'excel' ? 'xlsx' : 'pdf'}`;
                 a.click();
-                URL.revokeObjectURL(objUrl);
+                setTimeout(() => URL.revokeObjectURL(objUrl), 60_000);
                 toast(`${type.toUpperCase()} 报告已下载`, 'success');
             } catch (e) {
                 toast(`导出失败: ${e.message}`, 'error');
@@ -2033,9 +2033,11 @@
             };
             const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
             const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
+            const objUrl = URL.createObjectURL(blob);
+            a.href = objUrl;
             a.download = `defect_data_${Date.now()}.json`;
             a.click();
+            setTimeout(() => URL.revokeObjectURL(objUrl), 60_000);
             toast('JSON 数据已导出', 'success');
         }
 

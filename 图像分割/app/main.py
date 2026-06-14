@@ -1,6 +1,6 @@
-"""
-基础设施外观缺陷智能检测系统 - FastAPI 后端
-端口: 8000
+﻿"""
+鍩虹璁炬柦澶栬缂洪櫡鏅鸿兘妫€娴嬬郴缁?- FastAPI 鍚庣
+绔彛: 8000
 """
 
 import os
@@ -24,20 +24,23 @@ from fastapi import (
     WebSocket, WebSocketDisconnect, BackgroundTasks,
 )
 from fastapi.responses import (
-    HTMLResponse, FileResponse, StreamingResponse, JSONResponse,
+    HTMLResponse, FileResponse, StreamingResponse, JSONResponse, Response,
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.inference   import DefectDetector, FrameResult, MERGE_IOU_THRESHOLD
+from app.inference   import (
+    DefectDetector, FrameResult, MERGE_IOU_THRESHOLD,
+    make_detection_crops, sanitize_name,
+)
 from app.visualizer  import draw_detections, image_to_base64
 from app.reporter    import generate_excel_report, generate_pdf_report
 from app.cause_analyzer import MODEL_NAME as CAUSE_MODEL_NAME
 
 
-# ─────────────────────────────────────────────
-# 路径配置
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺緞閰嶇疆
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 BASE_DIR     = Path(__file__).parent.parent
 MODEL_PATH   = BASE_DIR / "pt" / "best.pt"
@@ -45,27 +48,28 @@ STATIC_DIR   = BASE_DIR / "static"
 REPORTS_DIR  = BASE_DIR / "reports"
 UPLOADS_DIR  = BASE_DIR / "uploads"
 VIDEO_ASSETS_DIR = UPLOADS_DIR / "video_assets"
+SESSION_ASSETS_DIR = UPLOADS_DIR / "session_assets"
 
 REPORTS_DIR.mkdir(exist_ok=True)
 UPLOADS_DIR.mkdir(exist_ok=True)
 VIDEO_ASSETS_DIR.mkdir(exist_ok=True)
+SESSION_ASSETS_DIR.mkdir(exist_ok=True)
 
 
-# ─────────────────────────────────────────────
-# 全局状态
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 鍏ㄥ眬鐘舵€?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 # session_id -> { results, source_name, annotated_images, created_at }
 SESSIONS: dict[str, dict] = {}
 ACTIVE_RUNS: dict[str, dict] = {}
 ACTIVE_RUNS_LOCK = threading.Lock()
 
-# 检测器单例（延迟加载）
+# 妫€娴嬪櫒鍗曚緥锛堝欢杩熷姞杞斤級
 _detector: Optional[DefectDetector] = None
 _detector_lock = threading.Lock()
 
 
-def get_detector(conf: float = 0.25, iou: float = 0.45) -> DefectDetector:
+def get_detector(conf: float = 0.1, iou: float = 0.25) -> DefectDetector:
     global _detector
     with _detector_lock:
         if _detector is None:
@@ -77,12 +81,12 @@ def get_detector(conf: float = 0.25, iou: float = 0.45) -> DefectDetector:
         return _detector
 
 
-# ─────────────────────────────────────────────
-# FastAPI 应用
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# FastAPI 搴旂敤
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 app = FastAPI(
-    title       = "基础设施外观缺陷智能检测系统",
+    title       = "Infrastructure Defect Detection System",
     description = "Infrastructure Defect Detection API powered by YOLOv8-Seg",
     version     = "1.0.0",
 )
@@ -95,21 +99,21 @@ app.add_middleware(
     allow_headers     = ["*"],
 )
 
-# 静态文件服务
+# Static file service.
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-# ─────────────────────────────────────────────
-# 工具函数
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 宸ュ叿鍑芥暟
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 def _decode_upload(data: bytes) -> np.ndarray:
-    """将上传的图像字节解码为 BGR numpy array"""
+    """Decode uploaded image bytes into a BGR numpy array."""
     arr = np.frombuffer(data, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        raise ValueError("无法解码图像，请确认文件格式")
+        raise ValueError("鏃犳硶瑙ｇ爜鍥惧儚锛岃纭鏂囦欢鏍煎紡")
     return img
 
 
@@ -129,7 +133,7 @@ def _make_session(
     }
     if extra:
         SESSIONS[sid].update(extra)
-    # 自动清理超过 1 小时的会话
+    # Clean up sessions older than 1 hour.
     _cleanup_old_sessions()
     return sid
 
@@ -147,7 +151,7 @@ def _cleanup_old_sessions(max_age_sec: int = 3600):
 
 def _get_session(session_id: str) -> dict:
     if session_id not in SESSIONS:
-        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+        raise HTTPException(status_code=404, detail="session not found or expired")
     return SESSIONS[session_id]
 
 
@@ -210,7 +214,32 @@ def _check_cancelled(cancel_event: Optional[threading.Event]):
         raise InterruptedError("run cancelled")
 
 
-def _collect_video_instance_images(session: dict) -> list[dict]:
+def _write_instance_crops(
+    session_id: str,
+    results: list[FrameResult],
+    source_images: list[np.ndarray],
+    asset_dir: Path,
+    asset_url_prefix: str,
+) -> None:
+    crops_dir = asset_dir / "crops"
+    crops_dir.mkdir(parents=True, exist_ok=True)
+
+    for result, image in zip(results, source_images):
+        frame_index = int(getattr(result, "frame_index", 0) or 0)
+        for det in result.detections:
+            _raw_crop, crop_vis = make_detection_crops(image, det)
+            if crop_vis.size == 0:
+                continue
+            crop_name = (
+                f"frame_{frame_index:04d}_det_{int(det.det_id):03d}_"
+                f"{sanitize_name(det.class_name)}.jpg"
+            )
+            crop_path = crops_dir / crop_name
+            cv2.imwrite(str(crop_path), crop_vis, [cv2.IMWRITE_JPEG_QUALITY, 100])
+            det.best_crop_url = f"{asset_url_prefix}/crops/{crop_name}"
+
+
+def _collect_instance_images(session_id: str, session: dict) -> list[dict]:
     asset_dir = session.get("asset_dir")
     if not asset_dir:
         return []
@@ -220,11 +249,11 @@ def _collect_video_instance_images(session: dict) -> list[dict]:
         for det in result.detections:
             if not det.best_crop_url:
                 continue
-            rel = det.best_crop_url.split("/api/video-assets/", 1)[-1]
-            parts = rel.split("/", 1)
-            if len(parts) != 2:
+            marker = f"/{session_id}/"
+            if marker not in det.best_crop_url:
                 continue
-            target = (base / parts[1]).resolve()
+            rel = det.best_crop_url.split(marker, 1)[1]
+            target = (base / rel).resolve()
             if base not in target.parents and target != base:
                 continue
             items.append({
@@ -232,28 +261,37 @@ def _collect_video_instance_images(session: dict) -> list[dict]:
                 "det_id": det.det_id,
                 "track_id": det.track_id,
                 "class_name": det.class_name,
-                "frame_index": det.best_frame_index if det.best_frame_index is not None else det.first_frame,
+                "frame_index": (
+                    det.best_frame_index
+                    if det.best_frame_index is not None
+                    else det.first_frame
+                    if det.first_frame is not None
+                    else getattr(result, "frame_index", 0)
+                ),
                 "first_time": det.first_time,
                 "last_time": det.last_time,
             })
     return items
 
 
-# ─────────────────────────────────────────────
-# 路由：前端页面
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺敱锛氬墠绔〉闈?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
     html_file = STATIC_DIR / "index.html"
     if not html_file.exists():
-        return HTMLResponse("<h1>前端文件缺失，请检查 static/index.html</h1>", status_code=500)
+        return HTMLResponse("<h1>鍓嶇鏂囦欢缂哄け锛岃妫€鏌?static/index.html</h1>", status_code=500)
     return HTMLResponse(html_file.read_text(encoding="utf-8"))
 
 
-# ─────────────────────────────────────────────
-# 路由：系统状态
-# ─────────────────────────────────────────────
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(status_code=204)
+
+
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺敱锛氱郴缁熺姸鎬?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.get("/api/health")
 async def health():
@@ -283,41 +321,45 @@ async def model_info():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ─────────────────────────────────────────────
-# 路由：图像检测
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺敱锛氬浘鍍忔娴?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.post("/api/detect/image")
 async def detect_image(
     file      : UploadFile = File(...),
-    conf      : float      = Form(0.25),
-    iou       : float      = Form(0.45),
+    conf      : float      = Form(0.1),
+    iou       : float      = Form(0.25),
 ):
     """
-    上传单张图像，返回检测结果 + 标注图 base64。
-    """
+    涓婁紶鍗曞紶鍥惧儚锛岃繑鍥炴娴嬬粨鏋?+ 鏍囨敞鍥?base64銆?    """
     try:
         data  = await file.read()
         image = _decode_upload(data)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"图像解码失败: {e}")
+        raise HTTPException(status_code=400, detail=f"鍥惧儚瑙ｇ爜澶辫触: {e}")
 
     try:
         detector = get_detector()
         detector.update_thresholds(conf, iou)
         result   = detector.detect_image(image)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"推理失败: {e}")
+        raise HTTPException(status_code=500, detail=f"鎺ㄧ悊澶辫触: {e}")
 
-    # 生成原始分辨率标注图
+    # 鐢熸垚鍘熷鍒嗚鲸鐜囨爣娉ㄥ浘
     ann_img  = draw_detections(image, result)
     img_b64  = image_to_base64(ann_img, "jpeg")
 
-    # 存入会话
+    # 瀛樺叆浼氳瘽
+    session_id = str(uuid.uuid4())
+    asset_dir = SESSION_ASSETS_DIR / session_id
+    asset_url_prefix = f"/api/session-assets/{session_id}"
+    _write_instance_crops(session_id, [result], [image], asset_dir, asset_url_prefix)
     session_id = _make_session(
         results          = [result],
         source_name      = file.filename or "image",
         annotated_images = [ann_img],
+        session_id       = session_id,
+        extra            = {"asset_dir": str(asset_dir)},
     )
 
     return JSONResponse({
@@ -334,26 +376,28 @@ async def detect_image(
     })
 
 
-# ─────────────────────────────────────────────
-# 路由：批量图像检测
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺敱锛氭壒閲忓浘鍍忔娴?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.post("/api/detect/batch")
 async def detect_batch(
     files: list[UploadFile] = File(...),
-    conf : float            = Form(0.25),
-    iou  : float            = Form(0.45),
+    conf : float            = Form(0.1),
+    iou  : float            = Form(0.25),
     run_id: Optional[str]   = Form(None),
 ):
     """
-    批量上传多张图像，返回汇总统计及各图结果。
-    """
+    鎵归噺涓婁紶澶氬紶鍥惧儚锛岃繑鍥炴眹鎬荤粺璁″強鍚勫浘缁撴灉銆?    """
     if len(files) > 50:
-        raise HTTPException(status_code=400, detail="单次批量最多 50 张图")
+        raise HTTPException(status_code=400, detail="鍗曟鎵归噺鏈€澶?50 寮犲浘")
 
     rid = _register_run(run_id, kind="batch")
     run_state = _get_run(rid) or {}
     cancel_event = run_state.get("cancel_event")
+    session_id = str(uuid.uuid4())
+    asset_dir = SESSION_ASSETS_DIR / session_id
+    asset_url_prefix = f"/api/session-assets/{session_id}"
+    _set_run_state(rid, session_id=session_id, asset_dir=str(asset_dir))
 
     payloads = []
     for f in files:
@@ -366,6 +410,7 @@ async def detect_batch(
 
         all_results: list[FrameResult] = []
         all_ann: list                   = []
+        source_images: list[np.ndarray] = []
         thumbnails_b64: list[str]       = []
 
         for idx, (_name, data) in enumerate(payloads):
@@ -375,16 +420,26 @@ async def detect_batch(
             except Exception:
                 continue
 
-            result  = detector.detect_image(image, frame_index=idx)
+            result  = detector.detect_image(image, frame_index=idx, analyze_causes=False)
             _check_cancelled(cancel_event)
             ann_img = draw_detections(image, result)
 
             all_results.append(result)
             all_ann.append(ann_img)
+            source_images.append(image)
             thumbnails_b64.append(image_to_base64(ann_img, "jpeg"))
 
         _check_cancelled(cancel_event)
-        session_id = _make_session(all_results, f"{len(files)} images", all_ann)
+        detector.add_cause_analysis_batch(source_images, all_results)
+        _check_cancelled(cancel_event)
+        _write_instance_crops(session_id, all_results, source_images, asset_dir, asset_url_prefix)
+        _make_session(
+            all_results,
+            f"{len(files)} images",
+            all_ann,
+            session_id=session_id,
+            extra={"asset_dir": str(asset_dir)},
+        )
         _set_run_state(rid, session_id=session_id)
 
         total_defs = sum(r.total_defects for r in all_results)
@@ -412,31 +467,29 @@ async def detect_batch(
         return JSONResponse(data)
     except InterruptedError:
         _finish_run(rid, cleanup=True)
-        raise HTTPException(status_code=499, detail="批处理已中断")
+        raise HTTPException(status_code=499, detail="鎵瑰鐞嗗凡涓柇")
     except Exception as e:
         _finish_run(rid, cleanup=True)
-        raise HTTPException(status_code=500, detail=f"批量推理失败: {e}")
+        raise HTTPException(status_code=500, detail=f"鎵归噺鎺ㄧ悊澶辫触: {e}")
     finally:
         _finish_run(rid)
 
 
-# ─────────────────────────────────────────────
-# 路由：视频检测（带进度）
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺敱锛氳棰戞娴嬶紙甯﹁繘搴︼級
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.post("/api/detect/video")
 async def detect_video(
     file            : UploadFile = File(...),
-    conf            : float      = Form(0.25),
-    iou             : float      = Form(0.45),
+    conf            : float      = Form(0.1),
+    iou             : float      = Form(0.25),
     sample_interval : int        = Form(5),
     max_frames      : int        = Form(200),
     run_id          : Optional[str] = Form(None),
 ):
     """
-    上传视频文件，逐帧检测，返回汇总结果。
-    大视频建议使用 WebSocket 接口 /ws/detect/video 获取实时进度。
-    """
+    涓婁紶瑙嗛鏂囦欢锛岄€愬抚妫€娴嬶紝杩斿洖姹囨€荤粨鏋溿€?    澶ц棰戝缓璁娇鐢?WebSocket 鎺ュ彛 /ws/detect/video 鑾峰彇瀹炴椂杩涘害銆?    """
     if max_frames > 500:
         max_frames = 500
 
@@ -447,7 +500,7 @@ async def detect_video(
     run_state = _get_run(rid) or {}
     cancel_event = run_state.get("cancel_event")
 
-    # 保存临时文件
+    # 淇濆瓨涓存椂鏂囦欢
     suffix = Path(file.filename or "video.mp4").suffix
     tmp_path = UPLOADS_DIR / f"{session_id}{suffix}"
     _set_run_state(rid, tmp_path=str(tmp_path))
@@ -480,8 +533,8 @@ async def detect_video(
         shutil.rmtree(asset_dir, ignore_errors=True)
         _finish_run(rid, cleanup=True)
         if isinstance(e, InterruptedError):
-            raise HTTPException(status_code=499, detail="视频处理已中断")
-        raise HTTPException(status_code=500, detail=f"视频处理失败: {e}")
+            raise HTTPException(status_code=499, detail="video processing cancelled")
+        raise HTTPException(status_code=500, detail=f"瑙嗛澶勭悊澶辫触: {e}")
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -514,21 +567,17 @@ async def detect_video(
     })
 
 
-# ─────────────────────────────────────────────
-# WebSocket：实时视频帧检测
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# WebSocket锛氬疄鏃惰棰戝抚妫€娴?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.websocket("/ws/detect")
 async def ws_detect(websocket: WebSocket):
     """
-    WebSocket 分阶段检测接口。
-    客户端发送 base64 编码的图像帧，服务端先返回 YOLO+实例合并结果，
-    再返回补充 CLIP/SigLIP 成因分析后的完整结果。
+    WebSocket 鍒嗛樁娈垫娴嬫帴鍙ｃ€?    瀹㈡埛绔彂閫?base64 缂栫爜鐨勫浘鍍忓抚锛屾湇鍔＄鍏堣繑鍥?YOLO+瀹炰緥鍚堝苟缁撴灉锛?    鍐嶈繑鍥炶ˉ鍏?CLIP/SigLIP 鎴愬洜鍒嗘瀽鍚庣殑瀹屾暣缁撴灉銆?
+    娑堟伅鏍煎紡锛堝鎴风 鈫?鏈嶅姟绔級:
+        {"image": "<base64>", "conf": 0.1, "iou": 0.25}
 
-    消息格式（客户端 → 服务端）:
-        {"image": "<base64>", "conf": 0.25, "iou": 0.45}
-
-    消息格式（服务端 → 客户端）:
+    娑堟伅鏍煎紡锛堟湇鍔＄ 鈫?瀹㈡埛绔級:
         {"stage": "segmentation_done", "image_b64": "...", "result": {...}}
         {"stage": "analysis_done", "result": {...}}
     """
@@ -541,13 +590,13 @@ async def ws_detect(websocket: WebSocket):
             try:
                 msg   = json.loads(raw)
                 b64   = msg.get("image", "")
-                conf  = float(msg.get("conf", 0.25))
-                iou   = float(msg.get("iou",  0.45))
+                conf  = float(msg.get("conf", 0.1))
+                iou   = float(msg.get("iou",  0.25))
                 rid = _register_run(msg.get("run_id"), kind="websocket")
                 run_state = _get_run(rid) or {}
                 cancel_event = run_state.get("cancel_event")
 
-                # 解码 base64 图像
+                # 瑙ｇ爜 base64 鍥惧儚
                 if "," in b64:
                     b64 = b64.split(",", 1)[1]
                 img_bytes = base64.b64decode(b64)
@@ -558,12 +607,18 @@ async def ws_detect(websocket: WebSocket):
                 _check_cancelled(cancel_event)
                 ann_img = draw_detections(image, result)
                 img_out = image_to_base64(ann_img, "jpeg")
+                session_id = str(uuid.uuid4())
+                asset_dir = SESSION_ASSETS_DIR / session_id
+                asset_url_prefix = f"/api/session-assets/{session_id}"
+                _write_instance_crops(session_id, [result], [image], asset_dir, asset_url_prefix)
                 session_id = _make_session(
                     results          = [result],
                     source_name      = msg.get("source_name", "websocket-image"),
                     annotated_images = [ann_img],
+                    session_id       = session_id,
+                    extra            = {"asset_dir": str(asset_dir)},
                 )
-                _set_run_state(rid, session_id=session_id)
+                _set_run_state(rid, session_id=session_id, asset_dir=str(asset_dir))
 
                 await websocket.send_json({
                     "stage"    : "segmentation_done",
@@ -603,13 +658,12 @@ async def ws_detect(websocket: WebSocket):
         pass
 
 
-# ─────────────────────────────────────────────
-# 路由：报告导出
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺敱锛氭姤鍛婂鍑?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.get("/api/report/{session_id}/excel")
 async def download_excel(session_id: str):
-    """下载 Excel 检测报告"""
+    """Download Excel report."""
     session = _get_session(session_id)
     try:
         raw = generate_excel_report(
@@ -617,7 +671,7 @@ async def download_excel(session_id: str):
             source_name = session["source_name"],
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Excel 生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"Excel 鐢熸垚澶辫触: {e}")
 
     filename = f"defect_report_{session_id[:8]}.xlsx"
     return StreamingResponse(
@@ -629,7 +683,7 @@ async def download_excel(session_id: str):
 
 @app.get("/api/report/{session_id}/pdf")
 async def download_pdf(session_id: str, include_images: bool = True):
-    """下载 PDF 检测报告"""
+    """Download PDF report."""
     session = _get_session(session_id)
     ann_imgs = session["annotated_images"] if include_images else []
     try:
@@ -637,11 +691,11 @@ async def download_pdf(session_id: str, include_images: bool = True):
             results          = session["results"],
             source_name      = session["source_name"],
             annotated_images = ann_imgs,
-            instance_image_paths = _collect_video_instance_images(session) if session.get("is_video") else None,
+            instance_image_paths = _collect_instance_images(session_id, session),
             video_summary    = session.get("video_summary") if session.get("is_video") else None,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF 生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"PDF 鐢熸垚澶辫触: {e}")
 
     filename = f"defect_report_{session_id[:8]}.pdf"
     return StreamingResponse(
@@ -653,25 +707,41 @@ async def download_pdf(session_id: str, include_images: bool = True):
 
 @app.get("/api/video-assets/{session_id}/{asset_path:path}")
 async def get_video_asset(session_id: str, asset_path: str):
-    """读取视频检测生成的标注视频或最佳实例 crop。"""
+    """Read video assets generated by detection."""
     session = _get_session(session_id)
     asset_dir = session.get("asset_dir")
     if not asset_dir:
-        raise HTTPException(status_code=404, detail="视频资产不存在")
+        raise HTTPException(status_code=404, detail="video assets not found")
 
     base = Path(asset_dir).resolve()
     target = (base / asset_path).resolve()
     if base not in target.parents and target != base:
-        raise HTTPException(status_code=400, detail="非法资产路径")
+        raise HTTPException(status_code=400, detail="闈炴硶璧勪骇璺緞")
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="资产文件不存在")
+        raise HTTPException(status_code=404, detail="asset file not found")
     media_type = "video/mp4" if target.suffix.lower() == ".mp4" else mimetypes.guess_type(str(target))[0]
     return FileResponse(str(target), media_type=media_type)
 
 
-# ─────────────────────────────────────────────
-# 路由：会话管理
-# ─────────────────────────────────────────────
+@app.get("/api/session-assets/{session_id}/{asset_path:path}")
+async def get_session_asset(session_id: str, asset_path: str):
+    """Read image or batch instance crop assets."""
+    session = _get_session(session_id)
+    asset_dir = session.get("asset_dir")
+    if not asset_dir:
+        raise HTTPException(status_code=404, detail="session assets not found")
+
+    base = Path(asset_dir).resolve()
+    target = (base / asset_path).resolve()
+    if base not in target.parents and target != base:
+        raise HTTPException(status_code=400, detail="闈炴硶璧勪骇璺緞")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="asset file not found")
+    return FileResponse(str(target), media_type=mimetypes.guess_type(str(target))[0])
+
+
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺敱锛氫細璇濈鐞?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.post("/api/runs/{run_id}/cancel")
 async def cancel_run(run_id: str):
@@ -712,13 +782,12 @@ async def delete_session(session_id: str):
     return {"status": "ok"}
 
 
-# ─────────────────────────────────────────────
-# 路由：数据集浏览（调试用）
-# ─────────────────────────────────────────────
+# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+# 璺敱锛氭暟鎹泦娴忚锛堣皟璇曠敤锛?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 @app.get("/api/dataset/samples")
 async def dataset_samples(limit: int = 12):
-    """返回数据集测试集图像列表"""
+    """Return test dataset image names."""
     test_dir = BASE_DIR / "crack-seg" / "test" / "images"
     if not test_dir.exists():
         return {"images": []}
@@ -728,23 +797,23 @@ async def dataset_samples(limit: int = 12):
 
 @app.get("/api/dataset/image/{filename}")
 async def dataset_image(filename: str):
-    """返回数据集中的原始图像"""
+    """Return a source image from the dataset."""
     img_path = BASE_DIR / "crack-seg" / "test" / "images" / filename
     if not img_path.exists():
-        raise HTTPException(status_code=404, detail="图像不存在")
+        raise HTTPException(status_code=404, detail="image not found")
     return FileResponse(str(img_path))
 
 
 @app.post("/api/dataset/detect/{filename}")
 async def dataset_detect(
     filename : str,
-    conf     : float = Form(0.25),
-    iou      : float = Form(0.45),
+    conf     : float = Form(0.1),
+    iou      : float = Form(0.25),
 ):
-    """对数据集中指定图像执行检测"""
+    """Run detection for one dataset image."""
     img_path = BASE_DIR / "crack-seg" / "test" / "images" / filename
     if not img_path.exists():
-        raise HTTPException(status_code=404, detail="图像不存在")
+        raise HTTPException(status_code=404, detail="image not found")
 
     image    = cv2.imread(str(img_path))
     detector = get_detector()
@@ -753,7 +822,17 @@ async def dataset_detect(
     ann_img  = draw_detections(image, result)
     img_b64  = image_to_base64(ann_img, "jpeg")
 
-    session_id = _make_session([result], filename, [ann_img])
+    session_id = str(uuid.uuid4())
+    asset_dir = SESSION_ASSETS_DIR / session_id
+    asset_url_prefix = f"/api/session-assets/{session_id}"
+    _write_instance_crops(session_id, [result], [image], asset_dir, asset_url_prefix)
+    session_id = _make_session(
+        [result],
+        filename,
+        [ann_img],
+        session_id=session_id,
+        extra={"asset_dir": str(asset_dir)},
+    )
 
     return JSONResponse({
         "session_id": session_id,

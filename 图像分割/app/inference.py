@@ -98,7 +98,7 @@ CLASS_COLORS_BGR = [
     (128, 255, 0  ),   # 9: 黄绿
 ]
 
-MERGE_IOU_THRESHOLD = 0.3
+MERGE_IOU_THRESHOLD = 0.25
 
 
 # ──────────────────────────────────────────────
@@ -344,6 +344,103 @@ def crop_from_bbox(image: np.ndarray, bbox: list[int]) -> np.ndarray:
     return image[y1:y2, x1:x2].copy()
 
 
+def decode_mask_rle(mask_rle: dict, image_shape: tuple[int, int]) -> Optional[np.ndarray]:
+    if not mask_rle:
+        return None
+    try:
+        origin = mask_rle.get("origin", [0, 0])
+        size = mask_rle.get("size", [0, 0])
+        counts = mask_rle.get("counts", [])
+        value = int(mask_rle.get("start", 0))
+        crop_h, crop_w = int(size[0]), int(size[1])
+        if crop_h <= 0 or crop_w <= 0 or not counts:
+            return None
+
+        total = crop_h * crop_w
+        flat = np.empty(total, dtype=np.uint8)
+        offset = 0
+        for count in counts:
+            count = int(count)
+            if count <= 0:
+                continue
+            end = min(total, offset + count)
+            flat[offset:end] = value
+            offset = end
+            value = 1 - value
+            if offset >= total:
+                break
+        if offset != total:
+            return None
+
+        mask_crop = flat.reshape((crop_h, crop_w), order="C")
+        x1, y1 = int(origin[0]), int(origin[1])
+        x2, y2 = x1 + crop_w, y1 + crop_h
+        H, W = image_shape
+        if x1 < 0 or y1 < 0 or x2 > W or y2 > H:
+            return None
+
+        mask = np.zeros((H, W), dtype=np.uint8)
+        mask[y1:y2, x1:x2] = mask_crop
+        return mask
+    except Exception:
+        return None
+
+
+def mask_from_detection(det: Detection, image_shape: tuple[int, int]) -> Optional[np.ndarray]:
+    mask = decode_mask_rle(getattr(det, "mask_rle", {}) or {}, image_shape)
+    if mask is not None:
+        return mask
+
+    if not getattr(det, "has_mask", False) or not getattr(det, "mask_polygon", None):
+        return None
+
+    try:
+        pts = np.array(det.mask_polygon, dtype=np.int32)
+        if pts.ndim == 2:
+            pts = pts.reshape((-1, 1, 2))
+        mask = np.zeros(image_shape, dtype=np.uint8)
+        cv2.fillPoly(mask, [pts], 1)
+        return mask
+    except Exception:
+        return None
+
+
+def mask_overlay_crop_from_bbox(
+    image: np.ndarray,
+    bbox: list[int],
+    mask: Optional[np.ndarray],
+    class_id: int,
+    alpha: float = 0.35,
+) -> np.ndarray:
+    raw = crop_from_bbox(image, bbox)
+    if raw.size == 0 or mask is None:
+        return raw
+
+    x1, y1, x2, y2 = bbox
+    H, W = image.shape[:2]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(W, x2), min(H, y2)
+    if x2 <= x1 or y2 <= y1:
+        return raw
+
+    mask_full = resize_mask_to_image(mask, (H, W)) > 0
+    mask_crop = mask_full[y1:y2, x1:x2]
+    if not mask_crop.any():
+        return raw
+
+    color = CLASS_COLORS_BGR[int(class_id) % len(CLASS_COLORS_BGR)]
+    overlay = raw.copy()
+    overlay[mask_crop] = color
+    return cv2.addWeighted(overlay, alpha, raw, 1 - alpha, 0)
+
+
+def make_detection_crops(image: np.ndarray, det: Detection) -> tuple[np.ndarray, np.ndarray]:
+    raw = crop_from_bbox(image, det.bbox)
+    mask = mask_from_detection(det, image.shape[:2])
+    overlay = mask_overlay_crop_from_bbox(image, det.bbox, mask, det.class_id)
+    return raw, overlay
+
+
 def compute_track_quality(
     image: np.ndarray,
     bbox: list[int],
@@ -417,8 +514,8 @@ class DefectDetector:
     def __init__(
         self,
         model_path: str = "./pt/best.pt",
-        conf_threshold: float = 0.25,
-        iou_threshold: float  = 0.45,
+        conf_threshold: float = 0.1,
+        iou_threshold: float  = 0.25,
         device: str = "",          # "" = 自动选择 (CUDA > CPU)
         imgsz: int = 640,
     ):
@@ -719,10 +816,11 @@ class DefectDetector:
 
                             if score >= float(memory.get("best_score", -1e9)):
                                 crop = crop_from_bbox(frame, bbox)
+                                crop_vis = mask_overlay_crop_from_bbox(frame, bbox, mask_full, class_id)
                                 crop_name = f"track_{int(track_id):04d}_{sanitize_name(class_name)}_best.jpg"
                                 crop_path = crops_dir / crop_name
-                                if crop.size > 0:
-                                    cv2.imwrite(str(crop_path), crop, [cv2.IMWRITE_JPEG_QUALITY, 100])
+                                if crop_vis.size > 0:
+                                    cv2.imwrite(str(crop_path), crop_vis, [cv2.IMWRITE_JPEG_QUALITY, 100])
                                 features = extract_crack_features(frame, mask_full, bbox)
                                 features["instance_name"] = f"{class_name}-T{int(track_id)}"
                                 memory.update({
@@ -896,6 +994,8 @@ class DefectDetector:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=120,
             )
         except FileNotFoundError as exc:
@@ -996,6 +1096,40 @@ class DefectDetector:
         for det, analysis in zip(valid_detections, analyses):
             det.cause_analysis = analysis
         return frame_result
+
+    def add_cause_analysis_batch(
+        self,
+        images: list[np.ndarray],
+        frame_results: list[FrameResult],
+    ) -> list[FrameResult]:
+        """为多张图的检测结果批量补充成因分析，避免逐图重复启动 worker。"""
+        analyzer = get_cause_analyzer()
+        analysis_items = []
+        valid_detections = []
+
+        for image, frame_result in zip(images, frame_results):
+            H, W = image.shape[:2]
+            for det in frame_result.detections:
+                x1, y1, x2, y2 = det.bbox
+                x1, y1 = max(0, x1), max(0, y1)
+                x2, y2 = min(W, x2), min(H, y2)
+                crop = image[y1:y2, x1:x2]
+                if crop.size == 0:
+                    det.cause_analysis = {"status": "error", "error": "empty crop"}
+                    continue
+                analysis_items.append({
+                    "crop_bgr": crop,
+                    "class_name": det.class_name,
+                })
+                valid_detections.append(det)
+
+        if not analysis_items:
+            return frame_results
+
+        analyses = analyzer.analyze_batch(analysis_items)
+        for det, analysis in zip(valid_detections, analyses):
+            det.cause_analysis = analysis
+        return frame_results
 
     # ── 工具方法 ─────────────────────────────
 
