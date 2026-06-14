@@ -235,7 +235,7 @@ def _write_instance_crops(
                 f"{sanitize_name(det.class_name)}.jpg"
             )
             crop_path = crops_dir / crop_name
-            cv2.imwrite(str(crop_path), crop_vis, [cv2.IMWRITE_JPEG_QUALITY, 100])
+            cv2.imwrite(str(crop_path), crop_vis, [cv2.IMWRITE_JPEG_QUALITY, 90])
             det.best_crop_url = f"{asset_url_prefix}/crops/{crop_name}"
 
 
@@ -341,7 +341,7 @@ async def detect_image(
     try:
         detector = get_detector()
         detector.update_thresholds(conf, iou)
-        result   = detector.detect_image(image)
+        result   = detector.detect_image(image, analyze_causes=False)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"鎺ㄧ悊澶辫触: {e}")
 

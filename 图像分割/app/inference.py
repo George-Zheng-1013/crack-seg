@@ -216,7 +216,19 @@ def merge_instances_by_iou(result, iou_threshold: float = MERGE_IOU_THRESHOLD) -
     return merged_instances
 
 
-def mask_to_polygon(mask: np.ndarray) -> list:
+def mask_to_polygon(mask: np.ndarray, bbox: Optional[list[int]] = None) -> list:
+    offset_x = 0
+    offset_y = 0
+    if bbox:
+        x1, y1, x2, y2 = bbox
+        h, w = mask.shape[:2]
+        x1, y1 = max(0, int(x1)), max(0, int(y1))
+        x2, y2 = min(w, int(x2)), min(h, int(y2))
+        if x2 <= x1 or y2 <= y1:
+            return []
+        mask = mask[y1:y2, x1:x2]
+        offset_x, offset_y = x1, y1
+
     contours, _ = cv2.findContours(
         mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -224,8 +236,11 @@ def mask_to_polygon(mask: np.ndarray) -> list:
         return []
     largest = max(contours, key=cv2.contourArea)
     epsilon = 0.02 * cv2.arcLength(largest, True)
-    approx = cv2.approxPolyDP(largest, epsilon, True)
-    return approx.reshape(-1, 2).tolist()
+    approx = cv2.approxPolyDP(largest, epsilon, True).reshape(-1, 2)
+    if offset_x or offset_y:
+        approx[:, 0] += offset_x
+        approx[:, 1] += offset_y
+    return approx.tolist()
 
 
 def encode_mask_rle(mask: np.ndarray, bbox: list[int]) -> dict:
@@ -241,18 +256,9 @@ def encode_mask_rle(mask: np.ndarray, bbox: list[int]) -> dict:
     if flat.size == 0:
         return {}
 
-    counts = []
-    current = int(flat[0])
-    run_len = 1
-    for value in flat[1:]:
-        value = int(value)
-        if value == current:
-            run_len += 1
-        else:
-            counts.append(run_len)
-            current = value
-            run_len = 1
-    counts.append(run_len)
+    changes = np.flatnonzero(flat[1:] != flat[:-1]) + 1
+    run_edges = np.concatenate(([0], changes, [flat.size]))
+    counts = np.diff(run_edges).astype(int).tolist()
 
     return {
         "origin": [x1, y1],
@@ -264,11 +270,28 @@ def encode_mask_rle(mask: np.ndarray, bbox: list[int]) -> dict:
 
 def extract_crack_features(image: np.ndarray, mask: np.ndarray, bbox: list[int]) -> dict:
     x1, y1, x2, y2 = bbox
+    H, W = mask.shape[:2]
+    x1, y1 = max(0, int(x1)), max(0, int(y1))
+    x2, y2 = min(W, int(x2)), min(H, int(y2))
     bbox_w, bbox_h = max(0, x2 - x1), max(0, y2 - y1)
     bbox_area = bbox_w * bbox_h
-    mask_uint8 = mask.astype(np.uint8)
+    mask_uint8 = mask[y1:y2, x1:x2].astype(np.uint8) if bbox_area > 0 else np.zeros((0, 0), dtype=np.uint8)
     mask_area = int(mask_uint8.sum())
     rectangularity = mask_area / bbox_area if bbox_area > 0 else 0
+
+    if mask_uint8.size == 0:
+        return {
+            "mask_area": 0,
+            "rectangularity": round(float(rectangularity), 4),
+            "slenderness": 0.0,
+            "major_direction": 0.0,
+            "boundary_complexity": 0.0,
+            "skeleton_length": 0,
+            "branch_points": 0,
+            "end_points": 0,
+            "color_mean_bgr": [0.0, 0.0, 0.0],
+            "color_std_bgr": [0.0, 0.0, 0.0],
+        }
 
     contours, _ = cv2.findContours(
         (mask_uint8 * 255).astype(np.uint8),
@@ -297,23 +320,36 @@ def extract_crack_features(image: np.ndarray, mask: np.ndarray, bbox: list[int])
     try:
         from skimage.morphology import skeletonize
 
-        skel = skeletonize(mask_uint8 > 0).astype(np.uint8)
-        skeleton_length = int(skel.sum())
-        h, w = skel.shape
-        for row in range(1, h - 1):
-            for col in range(1, w - 1):
-                if skel[row, col] == 1:
-                    neighbors = int(skel[row - 1:row + 2, col - 1:col + 2].sum()) - 1
-                    if neighbors >= 3:
-                        branch_points += 1
-                    elif neighbors == 1:
-                        end_points += 1
+        skel_mask = mask_uint8
+        scale_back = 1.0
+        max_skel_side = 512
+        mh, mw = skel_mask.shape[:2]
+        max_side = max(mh, mw)
+        if max_side > max_skel_side:
+            scale = max_skel_side / float(max_side)
+            new_w = max(1, int(round(mw * scale)))
+            new_h = max(1, int(round(mh * scale)))
+            skel_mask = cv2.resize(skel_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+            scale_back = 1.0 / scale
+
+        skel = skeletonize(skel_mask > 0).astype(np.uint8)
+        skeleton_length = int(round(float(skel.sum()) * scale_back))
+        if skeleton_length:
+            kernel = np.ones((3, 3), dtype=np.uint16)
+            neighbor_count = cv2.filter2D(skel.astype(np.uint16), cv2.CV_16U, kernel) - skel
+            branch_points = int(np.count_nonzero((skel == 1) & (neighbor_count >= 3)))
+            end_points = int(np.count_nonzero((skel == 1) & (neighbor_count == 1)))
     except Exception:
         pass
 
+    image_crop = image[y1:y2, x1:x2] if bbox_area > 0 else np.empty((0, 0, 3), dtype=image.dtype)
     mask_bool = mask_uint8.astype(bool)
-    pixels = image[mask_bool] if mask_bool.shape == image.shape[:2] else np.empty((0, 3))
+    pixels = image_crop[mask_bool] if mask_bool.shape == image_crop.shape[:2] else np.empty((0, 3))
     if len(pixels):
+        max_color_samples = 20000
+        if len(pixels) > max_color_samples:
+            step = max(1, len(pixels) // max_color_samples)
+            pixels = pixels[::step][:max_color_samples]
         color_mean = [round(float(v), 2) for v in pixels.mean(axis=0)]
         color_std = [round(float(v), 2) for v in pixels.std(axis=0)]
     else:
@@ -345,6 +381,22 @@ def crop_from_bbox(image: np.ndarray, bbox: list[int]) -> np.ndarray:
 
 
 def decode_mask_rle(mask_rle: dict, image_shape: tuple[int, int]) -> Optional[np.ndarray]:
+    decoded = decode_mask_rle_crop(mask_rle)
+    if decoded is None:
+        return None
+    x1, y1, mask_crop = decoded
+    crop_h, crop_w = mask_crop.shape[:2]
+    x2, y2 = x1 + crop_w, y1 + crop_h
+    H, W = image_shape
+    if x1 < 0 or y1 < 0 or x2 > W or y2 > H:
+        return None
+
+    mask = np.zeros((H, W), dtype=np.uint8)
+    mask[y1:y2, x1:x2] = mask_crop
+    return mask
+
+
+def decode_mask_rle_crop(mask_rle: dict) -> Optional[tuple[int, int, np.ndarray]]:
     if not mask_rle:
         return None
     try:
@@ -357,31 +409,15 @@ def decode_mask_rle(mask_rle: dict, image_shape: tuple[int, int]) -> Optional[np
             return None
 
         total = crop_h * crop_w
-        flat = np.empty(total, dtype=np.uint8)
-        offset = 0
-        for count in counts:
-            count = int(count)
-            if count <= 0:
-                continue
-            end = min(total, offset + count)
-            flat[offset:end] = value
-            offset = end
-            value = 1 - value
-            if offset >= total:
-                break
-        if offset != total:
+        counts_arr = np.asarray(counts, dtype=np.int64)
+        if counts_arr.sum() != total:
             return None
+        values = ((np.arange(len(counts_arr), dtype=np.uint8) + value) % 2).astype(np.uint8)
+        flat = np.repeat(values, counts_arr)
 
         mask_crop = flat.reshape((crop_h, crop_w), order="C")
         x1, y1 = int(origin[0]), int(origin[1])
-        x2, y2 = x1 + crop_w, y1 + crop_h
-        H, W = image_shape
-        if x1 < 0 or y1 < 0 or x2 > W or y2 > H:
-            return None
-
-        mask = np.zeros((H, W), dtype=np.uint8)
-        mask[y1:y2, x1:x2] = mask_crop
-        return mask
+        return x1, y1, mask_crop
     except Exception:
         return None
 
@@ -436,6 +472,18 @@ def mask_overlay_crop_from_bbox(
 
 def make_detection_crops(image: np.ndarray, det: Detection) -> tuple[np.ndarray, np.ndarray]:
     raw = crop_from_bbox(image, det.bbox)
+    decoded = decode_mask_rle_crop(getattr(det, "mask_rle", {}) or {})
+    if raw.size > 0 and decoded is not None:
+        rx, ry, mask_crop = decoded
+        x1, y1, x2, y2 = det.bbox
+        if rx == x1 and ry == y1 and mask_crop.shape[:2] == raw.shape[:2]:
+            overlay = raw.copy()
+            color = CLASS_COLORS_BGR[int(det.class_id) % len(CLASS_COLORS_BGR)]
+            colored = overlay.copy()
+            colored[mask_crop > 0] = color
+            overlay = cv2.addWeighted(colored, 0.35, raw, 0.65, 0)
+            return raw, overlay
+
     mask = mask_from_detection(det, image.shape[:2])
     overlay = mask_overlay_crop_from_bbox(image, det.bbox, mask, det.class_id)
     return raw, overlay
@@ -547,11 +595,27 @@ class DefectDetector:
 
         # 提取类别名映射
         self.class_names = self.model.names  # {int: str}
+        self._warmup_model()
         print(f"[Detector] 模型加载成功: {self.model_path.name}")
         print(f"[Detector] 类别: {self.class_names}")
         print(f"[Detector] 设备: {self.device or 'auto'}")
 
     # ── 单图推理 ─────────────────────────────
+
+    def _warmup_model(self):
+        try:
+            dummy = np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8)
+            self.model.predict(
+                source=dummy,
+                conf=self.conf_threshold,
+                iou=self.iou_threshold,
+                imgsz=self.imgsz,
+                device=self.device,
+                verbose=False,
+                retina_masks=False,
+            )
+        except Exception as exc:
+            print(f"[Detector] warmup skipped: {exc}")
 
     def detect_image(
         self,
@@ -1042,7 +1106,7 @@ class DefectDetector:
 
             mask_bin = resize_mask_to_image(item["mask"], (H, W))
             mask_area = int(mask_bin.sum())
-            mask_poly = mask_to_polygon(mask_bin)
+            mask_poly = mask_to_polygon(mask_bin, [x1, y1, x2, y2])
             mask_rle = encode_mask_rle(mask_bin, [x1, y1, x2, y2])
             features = extract_crack_features(image, mask_bin, [x1, y1, x2, y2])
             features["instance_name"] = item.get("name", f"{cls_name}{i + 1}")

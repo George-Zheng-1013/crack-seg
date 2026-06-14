@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from typing import Optional
 
-from app.inference import Detection, FrameResult, CLASS_COLORS_BGR
+from app.inference import Detection, FrameResult, CLASS_COLORS_BGR, decode_mask_rle_crop
 
 # ──────────────────────────────────────────────
 # 配置
@@ -114,6 +114,16 @@ def _draw_masks(
 
     for det in detections:
         color = _get_color(det.class_id)
+        decoded = decode_mask_rle_crop(getattr(det, "mask_rle", {}) or {})
+        if decoded is not None:
+            x1, y1, mask_crop = decoded
+            crop_h, crop_w = mask_crop.shape[:2]
+            x2, y2 = x1 + crop_w, y1 + crop_h
+            if 0 <= x1 < x2 <= W and 0 <= y1 < y2 <= H:
+                roi = overlay[y1:y2, x1:x2]
+                roi[mask_crop > 0] = color
+                continue
+
         mask = _decode_mask_rle(getattr(det, "mask_rle", {}) or {}, (H, W))
         if mask is not None:
             overlay[mask > 0] = color
@@ -279,7 +289,7 @@ def _draw_no_detection_hint(vis: np.ndarray) -> np.ndarray:
 # ──────────────────────────────────────────────
 
 
-def encode_image_to_jpeg_bytes(image: np.ndarray, quality: int = 100) -> bytes:
+def encode_image_to_jpeg_bytes(image: np.ndarray, quality: int = 85) -> bytes:
     """将 BGR numpy array 编码为 JPEG bytes"""
     ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
     if not ok:
