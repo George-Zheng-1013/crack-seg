@@ -98,7 +98,7 @@ CLASS_COLORS_BGR = [
     (128, 255, 0  ),   # 9: 黄绿
 ]
 
-MERGE_IOU_THRESHOLD = 0.25
+MERGE_IOU_THRESHOLD = 0.3
 
 
 # ──────────────────────────────────────────────
@@ -514,8 +514,8 @@ class DefectDetector:
     def __init__(
         self,
         model_path: str = "./pt/best.pt",
-        conf_threshold: float = 0.1,
-        iou_threshold: float  = 0.25,
+        conf_threshold: float = 0.25,
+        iou_threshold: float  = 0.45,
         device: str = "",          # "" = 自动选择 (CUDA > CPU)
         imgsz: int = 640,
     ):

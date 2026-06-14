@@ -69,7 +69,7 @@ _detector: Optional[DefectDetector] = None
 _detector_lock = threading.Lock()
 
 
-def get_detector(conf: float = 0.1, iou: float = 0.25) -> DefectDetector:
+def get_detector(conf: float = 0.25, iou: float = 0.45) -> DefectDetector:
     global _detector
     with _detector_lock:
         if _detector is None:
@@ -327,8 +327,8 @@ async def model_info():
 @app.post("/api/detect/image")
 async def detect_image(
     file      : UploadFile = File(...),
-    conf      : float      = Form(0.1),
-    iou       : float      = Form(0.25),
+    conf      : float      = Form(0.25),
+    iou       : float      = Form(0.45),
 ):
     """
     涓婁紶鍗曞紶鍥惧儚锛岃繑鍥炴娴嬬粨鏋?+ 鏍囨敞鍥?base64銆?    """
@@ -382,8 +382,8 @@ async def detect_image(
 @app.post("/api/detect/batch")
 async def detect_batch(
     files: list[UploadFile] = File(...),
-    conf : float            = Form(0.1),
-    iou  : float            = Form(0.25),
+    conf : float            = Form(0.25),
+    iou  : float            = Form(0.45),
     run_id: Optional[str]   = Form(None),
 ):
     """
@@ -482,8 +482,8 @@ async def detect_batch(
 @app.post("/api/detect/video")
 async def detect_video(
     file            : UploadFile = File(...),
-    conf            : float      = Form(0.1),
-    iou             : float      = Form(0.25),
+    conf            : float      = Form(0.25),
+    iou             : float      = Form(0.45),
     sample_interval : int        = Form(5),
     max_frames      : int        = Form(200),
     run_id          : Optional[str] = Form(None),
@@ -575,7 +575,7 @@ async def ws_detect(websocket: WebSocket):
     """
     WebSocket 鍒嗛樁娈垫娴嬫帴鍙ｃ€?    瀹㈡埛绔彂閫?base64 缂栫爜鐨勫浘鍍忓抚锛屾湇鍔＄鍏堣繑鍥?YOLO+瀹炰緥鍚堝苟缁撴灉锛?    鍐嶈繑鍥炶ˉ鍏?CLIP/SigLIP 鎴愬洜鍒嗘瀽鍚庣殑瀹屾暣缁撴灉銆?
     娑堟伅鏍煎紡锛堝鎴风 鈫?鏈嶅姟绔級:
-        {"image": "<base64>", "conf": 0.1, "iou": 0.25}
+        {"image": "<base64>", "conf": 0.25, "iou": 0.45}
 
     娑堟伅鏍煎紡锛堟湇鍔＄ 鈫?瀹㈡埛绔級:
         {"stage": "segmentation_done", "image_b64": "...", "result": {...}}
@@ -590,8 +590,8 @@ async def ws_detect(websocket: WebSocket):
             try:
                 msg   = json.loads(raw)
                 b64   = msg.get("image", "")
-                conf  = float(msg.get("conf", 0.1))
-                iou   = float(msg.get("iou",  0.25))
+                conf  = float(msg.get("conf", 0.25))
+                iou   = float(msg.get("iou",  0.45))
                 rid = _register_run(msg.get("run_id"), kind="websocket")
                 run_state = _get_run(rid) or {}
                 cancel_event = run_state.get("cancel_event")
@@ -807,8 +807,8 @@ async def dataset_image(filename: str):
 @app.post("/api/dataset/detect/{filename}")
 async def dataset_detect(
     filename : str,
-    conf     : float = Form(0.1),
-    iou      : float = Form(0.25),
+    conf     : float = Form(0.25),
+    iou      : float = Form(0.45),
 ):
     """Run detection for one dataset image."""
     img_path = BASE_DIR / "crack-seg" / "test" / "images" / filename

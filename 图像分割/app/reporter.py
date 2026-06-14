@@ -64,6 +64,14 @@ def _load_deepseek_config() -> dict:
     }
 
 
+def _llm_request_options() -> dict:
+    return {
+        "extra_body": {
+            "thinking": {"type": "disabled"},
+        },
+    }
+
+
 def _pdf_advice_payload(results: list[FrameResult]) -> list[dict]:
     items = []
     seq = 1
@@ -127,6 +135,7 @@ def _generate_pdf_api_advice(results: list[FrameResult]) -> dict[str, str]:
                 {"role": "user", "content": user_prompt},
             ],
             response_format={"type": "json_object"},
+            **_llm_request_options(),
         )
         content = response.choices[0].message.content or "{}"
         parsed = json.loads(content)
@@ -228,6 +237,7 @@ def _generate_video_scene_analysis(results: list[FrameResult], video_summary: Op
                 {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
             ],
             response_format={"type": "json_object"},
+            **_llm_request_options(),
         )
         parsed = json.loads(response.choices[0].message.content or "{}")
         text = str(parsed.get("scene_analysis", "")).strip()
