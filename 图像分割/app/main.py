@@ -35,7 +35,7 @@ from app.inference   import (
 )
 from app.visualizer  import draw_detections, image_to_base64
 from app.reporter    import generate_excel_report, generate_pdf_report
-from app.cause_analyzer import MODEL_NAME as CAUSE_MODEL_NAME
+from app.cause_analyzer import MODEL_NAME as CAUSE_MODEL_NAME, get_cause_analyzer
 
 
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -115,6 +115,12 @@ def _decode_upload(data: bytes) -> np.ndarray:
     if img is None:
         raise ValueError("鏃犳硶瑙ｇ爜鍥惧儚锛岃纭鏂囦欢鏍煎紡")
     return img
+
+
+def _decode_data_url_bytes(value: str) -> bytes:
+    if "," in value:
+        value = value.split(",", 1)[1]
+    return base64.b64decode(value)
 
 
 def _make_session(
@@ -237,6 +243,44 @@ def _write_instance_crops(
             crop_path = crops_dir / crop_name
             cv2.imwrite(str(crop_path), crop_vis, [cv2.IMWRITE_JPEG_QUALITY, 90])
             det.best_crop_url = f"{asset_url_prefix}/crops/{crop_name}"
+
+
+def _batch_payload(
+    session_id: str,
+    results: list[FrameResult],
+    thumbnails_b64: list[str],
+) -> dict:
+    total_defs = sum(r.total_defects for r in results)
+    by_class: dict[str, int] = {}
+    for r in results:
+        for cls, cnt in r.by_class.items():
+            by_class[cls] = by_class.get(cls, 0) + cnt
+
+    return {
+        "session_id"    : session_id,
+        "processed"     : len(results),
+        "thumbnails_b64": thumbnails_b64,
+        "results"       : [r.to_dict() for r in results],
+        "summary": {
+            "total_defects"  : total_defs,
+            "by_class"       : by_class,
+            "avg_inference_ms": round(
+                sum(r.inference_time_ms for r in results) / max(len(results), 1), 2
+            ),
+        },
+    }
+
+
+def _video_payload(session_id: str, video_result: dict) -> dict:
+    summary = video_result["summary"]
+    return {
+        "session_id"          : session_id,
+        "total_frames"        : summary.get("processed_frames", 0),
+        "annotated_video_url" : video_result.get("annotated_video_url", ""),
+        "timeline"            : video_result["timeline"],
+        "results"             : [r.to_dict() for r in video_result["results"]],
+        "summary"             : summary,
+    }
 
 
 def _collect_instance_images(session_id: str, session: dict) -> list[dict]:
@@ -442,25 +486,7 @@ async def detect_batch(
         )
         _set_run_state(rid, session_id=session_id)
 
-        total_defs = sum(r.total_defects for r in all_results)
-        by_class: dict[str, int] = {}
-        for r in all_results:
-            for cls, cnt in r.by_class.items():
-                by_class[cls] = by_class.get(cls, 0) + cnt
-
-        return {
-            "session_id"    : session_id,
-            "processed"     : len(all_results),
-            "thumbnails_b64": thumbnails_b64,
-            "results"       : [r.to_dict() for r in all_results],
-            "summary": {
-                "total_defects"  : total_defs,
-                "by_class"       : by_class,
-                "avg_inference_ms": round(
-                    sum(r.inference_time_ms for r in all_results) / max(len(all_results), 1), 2
-                ),
-            },
-        }
+        return _batch_payload(session_id, all_results, thumbnails_b64)
 
     try:
         data = await asyncio.to_thread(run_batch)
@@ -557,14 +583,7 @@ async def detect_video(
     )
     _finish_run(rid)
 
-    return JSONResponse({
-        "session_id"          : session_id,
-        "total_frames"        : summary.get("processed_frames", 0),
-        "annotated_video_url" : video_result.get("annotated_video_url", ""),
-        "timeline"            : timeline,
-        "results"             : [r.to_dict() for r in results],
-        "summary"             : summary,
-    })
+    return JSONResponse(_video_payload(session_id, video_result))
 
 
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -660,6 +679,166 @@ async def ws_detect(websocket: WebSocket):
 
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # 璺敱锛氭姤鍛婂鍑?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+
+@app.websocket("/ws/detect/batch")
+async def ws_detect_batch(websocket: WebSocket):
+    await websocket.accept()
+    detector = get_detector()
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            rid = None
+            sent_segmentation = False
+            try:
+                msg = json.loads(raw)
+                files = msg.get("files", [])
+                if len(files) > 50:
+                    raise ValueError("single batch supports at most 50 images")
+
+                conf = float(msg.get("conf", 0.25))
+                iou = float(msg.get("iou", 0.45))
+                rid = _register_run(msg.get("run_id"), kind="batch-websocket")
+                run_state = _get_run(rid) or {}
+                cancel_event = run_state.get("cancel_event")
+                session_id = str(uuid.uuid4())
+                asset_dir = SESSION_ASSETS_DIR / session_id
+                asset_url_prefix = f"/api/session-assets/{session_id}"
+                _set_run_state(rid, session_id=session_id, asset_dir=str(asset_dir))
+
+                detector.update_thresholds(conf, iou)
+                all_results: list[FrameResult] = []
+                all_ann: list = []
+                source_images: list[np.ndarray] = []
+                thumbnails_b64: list[str] = []
+
+                for idx, item in enumerate(files):
+                    _check_cancelled(cancel_event)
+                    image = _decode_upload(_decode_data_url_bytes(str(item.get("image", ""))))
+                    result = detector.detect_image(image, frame_index=idx, analyze_causes=False)
+                    ann_img = draw_detections(image, result)
+                    all_results.append(result)
+                    all_ann.append(ann_img)
+                    source_images.append(image)
+                    thumbnails_b64.append(image_to_base64(ann_img, "jpeg"))
+
+                _check_cancelled(cancel_event)
+                _write_instance_crops(session_id, all_results, source_images, asset_dir, asset_url_prefix)
+                _make_session(
+                    all_results,
+                    f"{len(files)} images",
+                    all_ann,
+                    session_id=session_id,
+                    extra={"asset_dir": str(asset_dir)},
+                )
+                _set_run_state(rid, session_id=session_id)
+                await websocket.send_json({"stage": "segmentation_done", **_batch_payload(session_id, all_results, thumbnails_b64)})
+                sent_segmentation = True
+
+                _check_cancelled(cancel_event)
+                detector.add_cause_analysis_batch(source_images, all_results)
+                await websocket.send_json({"stage": "analysis_done", **_batch_payload(session_id, all_results, thumbnails_b64)})
+                _finish_run(rid)
+            except Exception as e:
+                if rid:
+                    _finish_run(rid, cleanup=not sent_segmentation)
+                await websocket.send_json({"stage": "error", "error": str(e)})
+
+    except WebSocketDisconnect:
+        pass
+
+
+@app.websocket("/ws/detect/video")
+async def ws_detect_video(websocket: WebSocket):
+    await websocket.accept()
+    detector = get_detector()
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            rid = None
+            tmp_path: Optional[Path] = None
+            sent_segmentation = False
+            try:
+                msg = json.loads(raw)
+                conf = float(msg.get("conf", 0.25))
+                iou = float(msg.get("iou", 0.45))
+                sample_interval = int(msg.get("sample_interval", 5))
+                max_frames = min(int(msg.get("max_frames", 200)), 500)
+                filename = str(msg.get("filename") or "video.mp4")
+
+                session_id = str(uuid.uuid4())
+                asset_dir = VIDEO_ASSETS_DIR / session_id
+                asset_url_prefix = f"/api/video-assets/{session_id}"
+                rid = _register_run(
+                    msg.get("run_id"),
+                    kind="video-websocket",
+                    session_id=session_id,
+                    asset_dir=str(asset_dir),
+                )
+                run_state = _get_run(rid) or {}
+                cancel_event = run_state.get("cancel_event")
+
+                suffix = Path(filename).suffix or ".mp4"
+                tmp_path = UPLOADS_DIR / f"{session_id}{suffix}"
+                tmp_path.write_bytes(_decode_data_url_bytes(str(msg.get("video", ""))))
+                _set_run_state(rid, tmp_path=str(tmp_path))
+
+                detector.update_thresholds(conf, iou)
+                video_result = await asyncio.to_thread(
+                    detector.detect_video_tracking,
+                    str(tmp_path),
+                    asset_dir,
+                    asset_url_prefix,
+                    conf,
+                    iou,
+                    sample_interval,
+                    max_frames,
+                    "botsort.yaml",
+                    None,
+                    cancel_event,
+                    False,
+                )
+                _check_cancelled(cancel_event)
+
+                _make_session(
+                    video_result["results"],
+                    filename,
+                    [],
+                    session_id=session_id,
+                    extra={
+                        "asset_dir": str(asset_dir),
+                        "annotated_video_path": video_result.get("annotated_video_path", ""),
+                        "annotated_video_url": video_result.get("annotated_video_url", ""),
+                        "timeline": video_result["timeline"],
+                        "video_summary": video_result["summary"],
+                        "is_video": True,
+                    },
+                )
+                await websocket.send_json({"stage": "segmentation_done", **_video_payload(session_id, video_result)})
+                sent_segmentation = True
+
+                _check_cancelled(cancel_event)
+                analysis_items = video_result.get("_analysis_items", [])
+                analysis_detections = video_result.get("_analysis_detections", [])
+                if analysis_items:
+                    analyses = get_cause_analyzer().analyze_batch(analysis_items)
+                    for det, analysis in zip(analysis_detections, analyses):
+                        det.cause_analysis = analysis
+
+                await websocket.send_json({"stage": "analysis_done", **_video_payload(session_id, video_result)})
+                _finish_run(rid)
+            except Exception as e:
+                if rid:
+                    _finish_run(rid, cleanup=not sent_segmentation)
+                await websocket.send_json({"stage": "error", "error": str(e)})
+            finally:
+                if tmp_path is not None:
+                    tmp_path.unlink(missing_ok=True)
+
+    except WebSocketDisconnect:
+        pass
+
 
 @app.get("/api/report/{session_id}/excel")
 async def download_excel(session_id: str):

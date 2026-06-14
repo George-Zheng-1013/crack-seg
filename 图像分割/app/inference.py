@@ -747,6 +747,7 @@ class DefectDetector:
         tracker: str = "botsort.yaml",
         progress_callback=None,
         cancel_event: Optional[threading.Event] = None,
+        analyze_causes: bool = True,
     ) -> dict:
         def check_cancelled():
             if cancel_event is not None and cancel_event.is_set():
@@ -998,7 +999,7 @@ class DefectDetector:
             detections.append(det)
 
         check_cancelled()
-        if analysis_items:
+        if analyze_causes and analysis_items:
             analyses = get_cause_analyzer().analyze_batch(analysis_items)
             for det, analysis in zip(analysis_detections, analyses):
                 det.cause_analysis = analysis
@@ -1033,6 +1034,8 @@ class DefectDetector:
                 "sample_interval": sample_interval,
                 "tracker": tracker,
             },
+            "_analysis_items": analysis_items,
+            "_analysis_detections": analysis_detections,
         }
 
     def _transcode_video_for_browser(self, src_path: Path, dst_path: Path):

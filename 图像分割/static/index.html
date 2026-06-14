@@ -1452,6 +1452,18 @@
             fd.append('run_id', runId);
 
             try {
+                await detectBatchWebSocket([...fileInput.files], conf, iou, runId);
+                endRun();
+                return;
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    endRun();
+                    return;
+                }
+                console.warn('Batch WebSocket staged detection failed, falling back to HTTP:', e);
+            }
+
+            try {
                 const r = await fetch(`${API}/api/detect/batch`, { method: 'POST', body: fd, signal: activeAbortController?.signal });
                 if (!r.ok) { const e = await r.json(); throw new Error(e.detail || '批量推理失败'); }
                 const data = await r.json();
@@ -1463,6 +1475,75 @@
             } finally {
                 endRun();
             }
+        }
+
+        function detectBatchWebSocket(files, conf, iou, runId) {
+            return new Promise((resolve, reject) => {
+                const ws = new WebSocket(makeWsUrl('/ws/detect/batch'));
+                activeWebSocket = ws;
+                let settled = false;
+                let gotSegmentation = false;
+
+                ws.onopen = async () => {
+                    try {
+                        const payloadFiles = await Promise.all(files.map(async file => ({
+                            name: file.name,
+                            image: await fileToDataUrl(file),
+                        })));
+                        ws.send(JSON.stringify({ files: payloadFiles, conf, iou, run_id: runId }));
+                    } catch (e) {
+                        ws.close();
+                        reject(e);
+                    }
+                };
+
+                ws.onmessage = event => {
+                    const data = JSON.parse(event.data);
+                    if (data.stage === 'error') {
+                        ws.close();
+                        if (!settled && gotSegmentation) {
+                            settled = true;
+                            setLoading(false);
+                            toast(`成因分析失败: ${data.error || '未知错误'}`, 'error');
+                            resolve(data);
+                        } else if (!settled) {
+                            reject(new Error(data.error || 'Batch WebSocket failed'));
+                        }
+                        return;
+                    }
+
+                    if (data.stage === 'segmentation_done') {
+                        gotSegmentation = true;
+                        handleBatchResult(data, false);
+                        setLoading(false);
+                        toast(`批量分割完成：发现 ${data.summary.total_defects} 处缺陷，正在分析成因`, 'info');
+                        return;
+                    }
+
+                    if (data.stage === 'analysis_done') {
+                        handleBatchResult(data, true);
+                        toast(`批量成因分析完成：${data.processed} 张，共 ${data.summary.total_defects} 处缺陷`, 'success');
+                        settled = true;
+                        ws.close();
+                        resolve(data);
+                    }
+                };
+
+                ws.onerror = () => {
+                    if (activeAbortController?.signal.aborted) {
+                        reject(new DOMException('Aborted', 'AbortError'));
+                        return;
+                    }
+                    if (!settled && !gotSegmentation) reject(new Error('Batch WebSocket connection failed'));
+                };
+                ws.onclose = () => {
+                    if (activeAbortController?.signal.aborted) {
+                        reject(new DOMException('Aborted', 'AbortError'));
+                        return;
+                    }
+                    if (!settled && !gotSegmentation) reject(new Error('Batch WebSocket closed'));
+                };
+            });
         }
 
         async function detectVideo(conf, iou) {
@@ -1485,6 +1566,20 @@
             fd.append('run_id', runId);
 
             try {
+                await detectVideoWebSocket(fileInput.files[0], conf, iou, interval, maxFrames, runId);
+                endRun();
+                hideProgress();
+                return;
+            } catch (e) {
+                if (e.name === 'AbortError') {
+                    endRun();
+                    hideProgress();
+                    return;
+                }
+                console.warn('Video WebSocket staged detection failed, falling back to HTTP:', e);
+            }
+
+            try {
                 const r = await fetch(`${API}/api/detect/video`, { method: 'POST', body: fd, signal: activeAbortController?.signal });
                 if (!r.ok) { const e = await r.json(); throw new Error(e.detail || '视频处理失败'); }
                 const data = await r.json();
@@ -1497,6 +1592,83 @@
                 endRun();
                 hideProgress();
             }
+        }
+
+        function detectVideoWebSocket(file, conf, iou, interval, maxFrames, runId) {
+            return new Promise((resolve, reject) => {
+                const ws = new WebSocket(makeWsUrl('/ws/detect/video'));
+                activeWebSocket = ws;
+                let settled = false;
+                let gotSegmentation = false;
+
+                ws.onopen = async () => {
+                    try {
+                        const video = await fileToDataUrl(file);
+                        ws.send(JSON.stringify({
+                            video,
+                            filename: file.name,
+                            conf,
+                            iou,
+                            sample_interval: interval,
+                            max_frames: maxFrames,
+                            run_id: runId,
+                        }));
+                    } catch (e) {
+                        ws.close();
+                        reject(e);
+                    }
+                };
+
+                ws.onmessage = event => {
+                    const data = JSON.parse(event.data);
+                    if (data.stage === 'error') {
+                        ws.close();
+                        if (!settled && gotSegmentation) {
+                            settled = true;
+                            setLoading(false);
+                            hideProgress();
+                            toast(`视频成因分析失败: ${data.error || '未知错误'}`, 'error');
+                            resolve(data);
+                        } else if (!settled) {
+                            reject(new Error(data.error || 'Video WebSocket failed'));
+                        }
+                        return;
+                    }
+
+                    if (data.stage === 'segmentation_done') {
+                        gotSegmentation = true;
+                        handleVideoResult(data, false);
+                        setLoading(false);
+                        showProgress(100);
+                        toast(`视频分割完成：发现 ${data.summary.total_defects} 个实例，正在分析成因`, 'info');
+                        return;
+                    }
+
+                    if (data.stage === 'analysis_done') {
+                        handleVideoResult(data, true);
+                        hideProgress();
+                        toast(`视频成因分析完成：${data.total_frames} 帧，${data.summary.defective_frames} 帧含缺陷`, 'success');
+                        settled = true;
+                        ws.close();
+                        resolve(data);
+                    }
+                };
+
+                ws.onerror = () => {
+                    if (activeAbortController?.signal.aborted) {
+                        reject(new DOMException('Aborted', 'AbortError'));
+                        return;
+                    }
+                    if (!settled && !gotSegmentation) reject(new Error('Video WebSocket connection failed'));
+                };
+                ws.onclose = () => {
+                    if (activeAbortController?.signal.aborted) {
+                        reject(new DOMException('Aborted', 'AbortError'));
+                        return;
+                    }
+                    if (!settled && !gotSegmentation) reject(new Error('Video WebSocket closed'));
+                };
+            });
         }
 
         async function detectDatasetSample(filename) {
@@ -1567,7 +1739,7 @@
             document.getElementById('batch-thumbs').style.display = 'none';
         }
 
-        function handleBatchResult(data) {
+        function handleBatchResult(data, analysisDone = true) {
             currentSession = data.session_id;
             allResults = data.results;
             batchThumbnails = data.thumbnails_b64 || [];
@@ -1595,9 +1767,9 @@
                 frames: data.processed,
             });
             renderClassChart(data.summary.by_class);
-            enableExport(true);
+            enableExport(analysisDone);
             document.getElementById('timeline').classList.remove('visible');
-            addHistory({
+            if (analysisDone) addHistory({
                 type: 'batch',
                 name: `批量 ${data.processed || allResults.length} 张图像`,
                 session_id: currentSession,
@@ -1610,7 +1782,7 @@
             });
         }
 
-        function handleVideoResult(data) {
+        function handleVideoResult(data, analysisDone = true) {
             currentSession = data.session_id;
             allResults = data.results;
             videoTimeline = data.timeline || [];
@@ -1643,9 +1815,9 @@
                 frames: data.total_frames,
             });
             renderClassChart(data.summary.by_class);
-            enableExport(true);
+            enableExport(analysisDone);
             document.getElementById('batch-thumbs').style.display = 'none';
-            addHistory({
+            if (analysisDone) addHistory({
                 type: 'video',
                 name: '视频检测',
                 session_id: currentSession,
