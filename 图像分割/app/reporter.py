@@ -6,6 +6,7 @@
 import io
 import json
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -546,6 +547,14 @@ def generate_pdf_report(
             by_class[cls] = by_class.get(cls, 0) + cnt
     now_str = datetime.datetime.now().strftime("%Y年%m月%d日 %H:%M:%S")
 
+    # Both DeepSeek evaluations are independent, so video reports should not
+    # pay two network waits serially.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        advice_future = pool.submit(_generate_pdf_api_advice, results)
+        scene_future = pool.submit(_generate_video_scene_analysis, results, video_summary)
+        api_advice = advice_future.result()
+        scene_analysis = scene_future.result()
+
     buf   = io.BytesIO()
     doc   = SimpleDocTemplate(
         buf,
@@ -573,7 +582,6 @@ def generate_pdf_report(
     story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor("#2E75B6")))
     story.append(Spacer(1, 6 * mm))
 
-    scene_analysis = _generate_video_scene_analysis(results, video_summary)
     if scene_analysis:
         story.append(Paragraph("视频场景综合分析", cn_style(12, bold=True, color=colors.HexColor("#2E75B6"))))
         story.append(Spacer(1, 2 * mm))
@@ -623,14 +631,12 @@ def generate_pdf_report(
     det_headers = ["#", "帧编号", "类别", "置信度", "掩码面积", "视觉特征", "可能成因", "排查建议"]
     det_data = [det_headers]
 
-    api_advice = _generate_pdf_api_advice(results)
     det_seq = 1
     for r in results:
         for d in r.detections:
             top = _top_match(d)
-            advice_id = _pdf_advice_id(det_seq, r, d)
             advice_text = api_advice.get(
-                advice_id,
+                _pdf_advice_id(det_seq, r, d),
                 _cause_text(d, "inspection_advice", sep="；"),
             )
             det_data.append([
@@ -744,7 +750,7 @@ def generate_pdf_report(
 
                 tmpf = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
                 tmp_files.append(tmpf.name)
-                _cv2.imwrite(tmpf.name, img_bgr, [_cv2.IMWRITE_JPEG_QUALITY, 100])
+                _cv2.imwrite(tmpf.name, img_bgr, [_cv2.IMWRITE_JPEG_QUALITY, 85])
                 tmpf.close()
 
                 caption = (f"图 {i+1} | 帧编号: {frame_res.frame_index} | "

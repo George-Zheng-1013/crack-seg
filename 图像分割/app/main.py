@@ -376,6 +376,7 @@ async def warmup_models():
         return {
             "status": "ready",
             "models": {"yolo": detector.is_loaded, "siglip": cause["status"] == "ready"},
+            "class_names": detector.class_names,
             "warmup_time_ms": round((asyncio.get_running_loop().time() - started) * 1000),
         }
     except Exception as e:
@@ -897,16 +898,21 @@ async def download_pdf(session_id: str, include_images: bool = True):
     """Download PDF report."""
     session = _get_session(session_id)
     ann_imgs = session["annotated_images"] if include_images else []
-    try:
-        raw = generate_pdf_report(
-            results          = session["results"],
-            source_name      = session["source_name"],
-            annotated_images = ann_imgs,
-            instance_image_paths = _collect_instance_images(session_id, session),
-            video_summary    = session.get("video_summary") if session.get("is_video") else None,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PDF 鐢熸垚澶辫触: {e}")
+    cache_key = f"pdf:{include_images}"
+    raw = session.setdefault("report_cache", {}).get(cache_key)
+    if raw is None:
+        try:
+            raw = await asyncio.to_thread(
+                generate_pdf_report,
+                results          = session["results"],
+                source_name      = session["source_name"],
+                annotated_images = ann_imgs,
+                instance_image_paths = _collect_instance_images(session_id, session),
+                video_summary    = session.get("video_summary") if session.get("is_video") else None,
+            )
+            session["report_cache"][cache_key] = raw
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"PDF 生成失败: {e}")
 
     filename = f"defect_report_{session_id[:8]}.pdf"
     return StreamingResponse(
