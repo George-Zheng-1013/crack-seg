@@ -1124,6 +1124,7 @@
         ══════════════════════════════════════════════════ */
         window.addEventListener('DOMContentLoaded', async () => {
             await checkHealth();
+            warmupModels();
             await loadDatasetSamples();
         });
 
@@ -1132,9 +1133,8 @@
                 const r = await fetch(`${API}/api/health`);
                 const d = await r.json();
                 if (d.status === 'ok' && d.model_exists) {
-                    const info = await (await fetch(`${API}/api/model/info`)).json();
-                    document.getElementById('status-text').textContent = `支持类别：${Object.values(info.class_names).join(', ')}`;
-                    document.getElementById('status-dot').style.background = 'var(--green)';
+                    document.getElementById('status-text').textContent = '后端已连接，等待模型预热';
+                    document.getElementById('status-dot').style.background = 'var(--yellow)';
                 } else {
                     document.getElementById('status-text').textContent = '模型文件缺失';
                     document.getElementById('status-dot').style.background = 'var(--red)';
@@ -1142,6 +1142,27 @@
             } catch (e) {
                 document.getElementById('status-text').textContent = '后端未连接';
                 document.getElementById('status-dot').style.background = 'var(--red)';
+            }
+        }
+
+        async function warmupModels() {
+            const text = document.getElementById('status-text');
+            const dot = document.getElementById('status-dot');
+            text.textContent = 'YOLO 与 SigLIP 模型预热中...';
+            dot.style.background = 'var(--yellow)';
+            toast('正在同时预热 YOLO 分割模型与 SigLIP 成因模型', 'info');
+            try {
+                const r = await fetch(`${API}/api/model/warmup`, { method: 'POST' });
+                const data = await r.json();
+                if (!r.ok) throw new Error(data.detail || '预热失败');
+                const seconds = (data.warmup_time_ms / 1000).toFixed(1);
+                text.textContent = 'YOLO 与 SigLIP 模型已就绪';
+                dot.style.background = 'var(--green)';
+                toast(`两个模型预热完成（${seconds} 秒）`, 'success');
+            } catch (e) {
+                text.textContent = '模型预热失败';
+                dot.style.background = 'var(--red)';
+                toast(`YOLO / SigLIP 模型预热失败：${e.message}`, 'error');
             }
         }
 

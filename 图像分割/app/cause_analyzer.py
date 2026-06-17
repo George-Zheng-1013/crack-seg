@@ -18,6 +18,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,6 +95,8 @@ class CauseAnalyzer:
         self._prompt_lock = threading.Lock()
         self._workers: dict[str, _WorkerClient] = {}
         self._workers_lock = threading.Lock()
+        self._warmup_lock = threading.Lock()
+        self._warmed_up = False
         atexit.register(self.close)
 
     def close(self):
@@ -101,6 +104,30 @@ class CauseAnalyzer:
             for worker in self._workers.values():
                 worker.close()
             self._workers.clear()
+
+    def warmup(self) -> dict:
+        with self._warmup_lock:
+            if self._warmed_up:
+                return {"status": "ready", "model": self.model_name, "warmup_time_ms": 0}
+
+            self._load_prompts()
+            if not self._prompt_library:
+                raise RuntimeError(self._prompt_error or "prompt library unavailable")
+
+            started = time.perf_counter()
+            result = self.analyze_crop(
+                np.zeros((384, 384, 3), dtype=np.uint8),
+                next(iter(self._prompt_library)),
+                top_k=1,
+            )
+            if result.get("error"):
+                raise RuntimeError(result["error"])
+            self._warmed_up = True
+            return {
+                "status": "ready",
+                "model": self.model_name,
+                "warmup_time_ms": round((time.perf_counter() - started) * 1000),
+            }
 
     def _load_prompts(self):
         if self._prompt_library is not None or self._prompt_error is not None:

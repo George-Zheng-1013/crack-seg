@@ -365,6 +365,23 @@ async def model_info():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/model/warmup")
+async def warmup_models():
+    try:
+        started = asyncio.get_running_loop().time()
+        detector, cause = await asyncio.gather(
+            asyncio.to_thread(get_detector),
+            asyncio.to_thread(get_cause_analyzer().warmup),
+        )
+        return {
+            "status": "ready",
+            "models": {"yolo": detector.is_loaded, "siglip": cause["status"] == "ready"},
+            "warmup_time_ms": round((asyncio.get_running_loop().time() - started) * 1000),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 # 璺敱锛氬浘鍍忔娴?# 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
