@@ -684,6 +684,7 @@ async def ws_detect(websocket: WebSocket):
 async def ws_detect_batch(websocket: WebSocket):
     await websocket.accept()
     detector = get_detector()
+    upload = None
 
     try:
         while True:
@@ -692,6 +693,20 @@ async def ws_detect_batch(websocket: WebSocket):
             sent_segmentation = False
             try:
                 msg = json.loads(raw)
+                if msg.get("type") == "init":
+                    if int(msg.get("file_count", 0)) > 50:
+                        raise ValueError("single batch supports at most 50 images")
+                    upload = {**msg, "files": []}
+                    continue
+                if msg.get("type") == "file":
+                    if upload is None:
+                        raise ValueError("batch upload is not initialized")
+                    upload["files"].append({"name": msg.get("name"), "image": msg.get("image")})
+                    continue
+                if msg.get("type") == "start":
+                    if upload is None:
+                        raise ValueError("batch upload is not initialized")
+                    msg, upload = upload, None
                 files = msg.get("files", [])
                 if len(files) > 50:
                     raise ValueError("single batch supports at most 50 images")

@@ -22,25 +22,32 @@ DEVICE_SETTING = os.getenv("CAUSE_MODEL_DEVICE", "auto").lower()
 
 def main() -> int:
     _suppress_windows_crash_dialog()
-    try:
-        payload = json.loads(sys.stdin.read())
-        model_name = payload["model_name"]
-        prompts_path = Path(payload["prompts_path"])
-        top_k = int(payload.get("top_k", 3))
-        items = payload.get("items", [])
+    model_name = None
+    prompt_path = None
+    model_bundle = None
+    prompt_library = None
 
-        prompt_library = _load_prompt_library(prompts_path)
-        model_bundle = _load_model(model_name)
+    for line in sys.stdin:
+        try:
+            payload = json.loads(line)
+            next_model_name = payload["model_name"]
+            next_prompt_path = Path(payload["prompts_path"])
+            if prompt_library is None or next_prompt_path != prompt_path:
+                prompt_library = _load_prompt_library(next_prompt_path)
+                prompt_path = next_prompt_path
+            if model_bundle is None or next_model_name != model_name:
+                model_bundle = _load_model(next_model_name)
+                model_name = next_model_name
 
-        results = [
-            _analyze_item(item, prompt_library, model_bundle, top_k)
-            for item in items
-        ]
-        print(json.dumps({"results": results}, ensure_ascii=False), flush=True)
-        return 0
-    except Exception as exc:
-        print(str(exc), file=sys.stderr, flush=True)
-        return 1
+            top_k = int(payload.get("top_k", 3))
+            results = [
+                _analyze_item(item, prompt_library, model_bundle, top_k)
+                for item in payload.get("items", [])
+            ]
+            print(json.dumps({"results": results}, ensure_ascii=False), flush=True)
+        except Exception as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), flush=True)
+    return 0
 
 
 def _suppress_windows_crash_dialog() -> None:

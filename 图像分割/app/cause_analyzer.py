@@ -3,16 +3,18 @@ CLIP/SigLIP cause analysis wrapper.
 
 The FastAPI/YOLO process imports OpenCV. On this Windows environment, loading
 the SigLIP torch model in the same process after cv2 can trigger a native access
-violation. To keep the server stable, SigLIP runs in a short-lived worker
-subprocess that does not import cv2.
+violation. To keep the server stable, SigLIP runs in a persistent worker
+subprocess that does not import cv2 and reuses the loaded model.
 """
 
 from __future__ import annotations
 
+import atexit
 import base64
 import io
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -29,6 +31,59 @@ CPU_FALLBACK_TIMEOUT_SEC = int(os.getenv("CAUSE_CPU_FALLBACK_TIMEOUT_SEC", "600"
 WINDOWS_ACCESS_VIOLATION_EXIT = 3221225477
 
 
+class _WorkerCrashed(RuntimeError):
+    def __init__(self, returncode: int | None):
+        super().__init__(f"cause worker exited with code {returncode}")
+        self.returncode = returncode
+
+
+class _WorkerClient:
+    def __init__(self, app_root: Path, env: dict):
+        self._lock = threading.Lock()
+        self._responses: queue.Queue[str | None] = queue.Queue()
+        self._proc = subprocess.Popen(
+            [sys.executable, "-m", "app.cause_worker"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            cwd=str(app_root),
+            env=env,
+            bufsize=1,
+        )
+        threading.Thread(target=self._read_stdout, daemon=True).start()
+
+    def _read_stdout(self):
+        assert self._proc.stdout is not None
+        for line in self._proc.stdout:
+            self._responses.put(line)
+        self._proc.wait()
+        self._responses.put(None)
+
+    def request(self, payload: dict, timeout_sec: int) -> dict:
+        with self._lock:
+            if self._proc.poll() is not None:
+                raise _WorkerCrashed(self._proc.returncode)
+            assert self._proc.stdin is not None
+            try:
+                self._proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                raise _WorkerCrashed(self._proc.poll())
+            try:
+                response = self._responses.get(timeout=timeout_sec)
+            except queue.Empty:
+                self.close()
+                raise TimeoutError
+            if response is None:
+                raise _WorkerCrashed(self._proc.poll())
+            return json.loads(response)
+
+    def close(self):
+        if self._proc.poll() is None:
+            self._proc.kill()
+
+
 @dataclass
 class CauseAnalyzer:
     model_name: str = MODEL_NAME
@@ -37,6 +92,15 @@ class CauseAnalyzer:
         self._prompt_library = None
         self._prompt_error: str | None = None
         self._prompt_lock = threading.Lock()
+        self._workers: dict[str, _WorkerClient] = {}
+        self._workers_lock = threading.Lock()
+        atexit.register(self.close)
+
+    def close(self):
+        with self._workers_lock:
+            for worker in self._workers.values():
+                worker.close()
+            self._workers.clear()
 
     def _load_prompts(self):
         if self._prompt_library is not None or self._prompt_error is not None:
@@ -125,99 +189,61 @@ class CauseAnalyzer:
             "items": payload_items,
         }
 
-        proc = self._run_worker_process(payload, app_root, env, WORKER_TIMEOUT_SEC)
-        if isinstance(proc, subprocess.TimeoutExpired):
+        try:
+            data = self._request_worker(payload, app_root, env, WORKER_TIMEOUT_SEC)
+        except TimeoutError:
             return [
                 _empty_analysis(f"cause worker timed out after {WORKER_TIMEOUT_SEC}s")
                 for _ in payload_items
             ]
-        if isinstance(proc, Exception):
-            return [
-                _empty_analysis(f"cause worker failed: {proc}") for _ in payload_items
-            ]
-
-        if proc.returncode != 0:
+        except _WorkerCrashed as exc:
             if (
-                proc.returncode == WINDOWS_ACCESS_VIOLATION_EXIT
+                exc.returncode in {WINDOWS_ACCESS_VIOLATION_EXIT, -1073741819}
                 and env.get("CAUSE_MODEL_DEVICE", "auto").lower() != "cpu"
             ):
                 cpu_env = env.copy()
                 cpu_env["CAUSE_MODEL_DEVICE"] = "cpu"
-                cpu_proc = self._run_worker_process(
-                    payload,
-                    app_root,
-                    cpu_env,
-                    CPU_FALLBACK_TIMEOUT_SEC,
-                )
-                if isinstance(cpu_proc, subprocess.TimeoutExpired):
+                try:
+                    data = self._request_worker(
+                        payload, app_root, cpu_env, CPU_FALLBACK_TIMEOUT_SEC
+                    )
+                except Exception as cpu_exc:
                     return [
-                        _empty_analysis(
-                            "GPU SigLIP worker crashed with access violation; "
-                            f"CPU fallback timed out after {CPU_FALLBACK_TIMEOUT_SEC}s"
-                        )
-                        for _ in payload_items
-                    ]
-                if isinstance(cpu_proc, Exception):
-                    return [
-                        _empty_analysis(
-                            "GPU SigLIP worker crashed with access violation; "
-                            f"CPU fallback failed: {cpu_proc}"
-                        )
-                        for _ in payload_items
-                    ]
-                if cpu_proc.returncode == 0:
-                    proc = cpu_proc
-                else:
-                    cpu_err = (
-                        cpu_proc.stderr
-                        or cpu_proc.stdout
-                        or f"CPU fallback worker exit code {cpu_proc.returncode}"
-                    ).strip()
-                    return [
-                        _empty_analysis(
-                            "GPU SigLIP worker crashed with access violation; "
-                            f"CPU fallback failed: {cpu_err}"
-                        )
+                        _empty_analysis(f"GPU worker crashed; CPU fallback failed: {cpu_exc}")
                         for _ in payload_items
                     ]
             else:
-                err = _worker_error(proc)
-                return [_empty_analysis(err) for _ in payload_items]
-
-        if proc.returncode != 0:
-            err = _worker_error(proc)
-            return [_empty_analysis(err) for _ in payload_items]
-
-        try:
-            data = json.loads(proc.stdout)
-            return data.get("results", [])
+                return [_empty_analysis(str(exc)) for _ in payload_items]
         except Exception as exc:
-            err = f"invalid worker output: {exc}; stdout={proc.stdout[:500]}"
+            return [
+                _empty_analysis(f"cause worker failed: {exc}") for _ in payload_items
+            ]
+        if data.get("error"):
+            err = f"cause worker failed: {data['error']}"
             return [_empty_analysis(err) for _ in payload_items]
+        return data.get("results", [])
 
-    def _run_worker_process(
+    def _request_worker(
         self,
         payload: dict,
         app_root: Path,
         env: dict,
         timeout_sec: int,
-    ):
+    ) -> dict:
+        device = env.get("CAUSE_MODEL_DEVICE", "auto").lower()
+        with self._workers_lock:
+            worker = self._workers.get(device)
+            if worker is None or worker._proc.poll() is not None:
+                worker = _WorkerClient(app_root, env)
+                self._workers[device] = worker
         try:
-            return subprocess.run(
-                [sys.executable, "-m", "app.cause_worker"],
-                input=json.dumps(payload, ensure_ascii=False),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                cwd=str(app_root),
-                env=env,
-                timeout=timeout_sec,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            return exc
-        except Exception as exc:
-            return exc
+            return worker.request(payload, timeout_sec)
+        except (TimeoutError, _WorkerCrashed):
+            with self._workers_lock:
+                if self._workers.get(device) is worker:
+                    worker.close()
+                    del self._workers[device]
+            raise
 
 
 def _encode_crop_png(crop_bgr: np.ndarray) -> str:
@@ -226,12 +252,6 @@ def _encode_crop_png(crop_bgr: np.ndarray) -> str:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
-def _worker_error(proc: subprocess.CompletedProcess) -> str:
-    detail = (proc.stderr or proc.stdout or "").strip()
-    code = f"worker exit code {proc.returncode}"
-    return f"{code}: {detail}" if detail else code
 
 
 def _empty_analysis(error: str, class_name: str = "") -> dict:

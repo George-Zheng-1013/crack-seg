@@ -1486,11 +1486,11 @@
 
                 ws.onopen = async () => {
                     try {
-                        const payloadFiles = await Promise.all(files.map(async file => ({
-                            name: file.name,
-                            image: await fileToDataUrl(file),
-                        })));
-                        ws.send(JSON.stringify({ files: payloadFiles, conf, iou, run_id: runId }));
+                        ws.send(JSON.stringify({ type: 'init', file_count: files.length, conf, iou, run_id: runId }));
+                        for (const file of files) {
+                            ws.send(JSON.stringify({ type: 'file', name: file.name, image: await fileToDataUrl(file) }));
+                        }
+                        ws.send(JSON.stringify({ type: 'start' }));
                     } catch (e) {
                         ws.close();
                         reject(e);
